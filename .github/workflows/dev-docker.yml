@@ -1,6 +1,9 @@
 name: Dev Docker Image
 
 on:
+  push:
+    branches:
+      - development
   workflow_dispatch:
     inputs:
       ref:
@@ -23,7 +26,7 @@ jobs:
       - name: Resolve ref and tag
         id: resolve
         env:
-          INPUT_REF: ${{ inputs.ref }}
+          INPUT_REF: ${{ inputs.ref || github.ref_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           if [[ "$INPUT_REF" =~ ^[0-9]+$ ]]; then
@@ -38,6 +41,9 @@ jobs:
           fi
 
           FINAL_TAG="${INPUT_TAG:-$DEFAULT_TAG}"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            FINAL_TAG="development"
+          fi
 
           echo "ref=${RESOLVED_REF}" >> $GITHUB_OUTPUT
           echo "tag=${FINAL_TAG}" >> $GITHUB_OUTPUT
