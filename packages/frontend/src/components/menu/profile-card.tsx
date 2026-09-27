@@ -1,8 +1,8 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
-import { TextInput } from '@/components/ui/text-input';
+import { Button } from '@aiostreams/ui/button';
+import { TextInput } from '@aiostreams/ui/text-input';
 import { SettingsCard } from '@/components/shared/settings-card';
 import { useSession } from '@/context/session';
 import { useUserData } from '@/context/userData';
@@ -34,7 +34,9 @@ export function ProfileCard() {
     setAlias(profile?.alias ?? '');
   }, [profile?.id, profile?.label, profile?.alias]);
 
-  if (!sessionUser || !uuid || !password) {
+  // Only saving needs the password, which a restored sign-in does not have;
+  // a saved profile is edited by its id.
+  if (!sessionUser || !uuid || (!profile && !password)) {
     return null;
   }
 
@@ -62,7 +64,7 @@ export function ProfileCard() {
           : `Save this configuration to ${sessionUser.username} so you can reopen it without the password.`
       }
     >
-      {!profile ? (
+      {!profile && password ? (
         <div className="flex flex-col sm:flex-row sm:items-end gap-2">
           <TextInput
             label="Name"
@@ -86,7 +88,7 @@ export function ProfileCard() {
             Save as profile
           </Button>
         </div>
-      ) : (
+      ) : profile ? (
         <div className="space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-end gap-2">
             <TextInput
@@ -141,8 +143,8 @@ export function ProfileCard() {
             </div>
             <p className="text-sm text-[--muted]">
               {profile.alias
-                ? 'Your manifest URL above uses this alias. Anyone with it can install this configuration, so treat it like the long URL, and keep it hard to guess.'
-                : 'An alias shortens your manifest URL above. It replaces the UUID and password in the link, so it grants the same access.'}
+                ? 'Your manifest URL and sign-in picker address use this alias. Anyone with it can install this configuration, so treat it like the long URL, and keep it hard to guess.'
+                : 'An alias shortens your manifest URL and sign-in picker address. It replaces the UUID and password in them, so it grants the same access.'}
             </p>
           </div>
 
@@ -161,7 +163,7 @@ export function ProfileCard() {
             Delete profile
           </Button>
         </div>
-      )}
+      ) : null}
     </SettingsCard>
   );
 }

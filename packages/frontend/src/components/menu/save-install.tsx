@@ -1,11 +1,12 @@
 import React from 'react';
-import { Button } from '@/components/ui/button';
-import { TextInput } from '@/components/ui/text-input';
+import { Button } from '@aiostreams/ui/button';
+import { TextInput } from '@aiostreams/ui/text-input';
 import { applyMigrations, useUserData } from '@/context/userData';
 import {
   createUserConfig,
   deleteUserConfig,
   changePassword,
+  createConfigSession,
   approveJellyfinQuickConnect,
   getJellyfinQuickConnectPending,
   type QuickConnectPending,
@@ -15,13 +16,14 @@ import { JellyfinApiKeys } from './jellyfin-api-keys';
 import { JellyfinPersonas } from './jellyfin-personas';
 import { JellyfinTrackers } from './jellyfin-trackers';
 import { PageWrapper } from '@/components/shared/page-wrapper';
-import { Alert } from '@/components/ui/alert';
+import { Alert } from '@aiostreams/ui/alert';
 import { SettingsCard } from '../shared/settings-card';
 import { toast } from 'sonner';
 import {
   Code2,
   CopyIcon,
   KeyRound,
+  MonitorPlay,
   Layers,
   LibraryBig,
   Settings2,
@@ -33,27 +35,27 @@ import {
 } from 'lucide-react';
 import { LuSquareCheck, LuSquareMinus, LuWand } from 'react-icons/lu';
 import { AnimatePresence, motion } from 'motion/react';
-import { Checkbox, CheckboxGroup } from '@/components/ui/checkbox';
-import { IconButton } from '@/components/ui/button';
+import { Checkbox, CheckboxGroup } from '@aiostreams/ui/checkbox';
+import { IconButton } from '@aiostreams/ui/button';
 import { useStatus } from '@/context/status';
 import { BiCopy } from 'react-icons/bi';
-import { copyToClipboard } from '@/utils/clipboard';
+import { copyToClipboard } from '@aiostreams/ui/utils/clipboard';
 import { PageControls } from '../shared/page-controls';
-import { useDisclosure } from '@/hooks/disclosure';
-import { Modal } from '../ui/modal';
+import { useDisclosure } from '@aiostreams/ui/hooks/disclosure';
+import { Modal } from '@aiostreams/ui/modal';
 import { MenuTabs } from '../shared/menu-tabs';
-import { Select } from '../ui/select';
-import { Switch } from '../ui/switch';
-import { NumberInput } from '../ui/number-input';
+import { Select } from '@aiostreams/ui/select';
+import { Switch } from '@aiostreams/ui/switch';
+import { NumberInput } from '@aiostreams/ui/number-input';
 import { TemplateExportModal } from '../shared/templates/export-modal';
 import { ConfigTemplatesModal } from '../shared/templates';
-import { PasswordInput } from '../ui/password-input';
+import { PasswordInput } from '@aiostreams/ui/password-input';
 import { useMenu } from '@/context/menu';
 import { variantSelectionFromLocation } from '@/lib/manifest-url';
 import {
   ConfirmationDialog,
   useConfirmationDialog,
-} from '../shared/confirmation-dialog';
+} from '@aiostreams/ui/shared/confirmation-dialog';
 import { UserData, VariantSelectorLocation } from '@aiostreams/core';
 import { sanitiseTemplateConfig } from '../../../../core/src/utils/template-sanitise';
 import { useSave } from '@/context/save';
@@ -181,6 +183,8 @@ interface CreateConfigCardProps {
   confirmNewPassword: string;
   onNewPasswordChange: (value: string) => void;
   onConfirmNewPasswordChange: (value: string) => void;
+  staySignedIn: boolean | null;
+  onStaySignedInChange: (value: boolean) => void;
   createLoading: boolean;
 }
 
@@ -191,6 +195,8 @@ function CreateConfigCard({
   confirmNewPassword,
   onNewPasswordChange,
   onConfirmNewPasswordChange,
+  staySignedIn,
+  onStaySignedInChange,
   createLoading,
 }: CreateConfigCardProps) {
   return (
@@ -242,9 +248,19 @@ function CreateConfigCard({
             it is required to make changes.
           </p>
         </div>
-        <Button intent="white" type="submit" loading={createLoading} rounded>
-          Create
-        </Button>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <Button intent="white" type="submit" loading={createLoading} rounded>
+            Create
+          </Button>
+          {staySignedIn !== null && (
+            <Checkbox
+              label="Remember me"
+              fieldClass="flex w-auto gap-2"
+              value={staySignedIn}
+              onValueChange={(v) => onStaySignedInChange(v === true)}
+            />
+          )}
+        </div>
       </form>
     </SettingsCard>
   );
@@ -915,6 +931,10 @@ interface StremioCustomSourceModalProps {
 
 const DEFAULT_NAME_TEMPLATE = '{catalog.name} - {catalog.type}';
 
+/** The desktop app's stable release, whose notes link each download. */
+const DESKTOP_DOWNLOAD_URL =
+  'https://github.com/Viren070/AIOStreams/releases/tag/desktop';
+
 const VARIANT_LOCATION_STORAGE_KEY = 'aiostreams:install:variant-location';
 
 const STREMIO_CUSTOM_SOURCE_STORAGE_KEYS = {
@@ -1541,6 +1561,7 @@ function Content() {
   const preferencesModal = useDisclosure(false);
   const [newPassword, setNewPassword] = React.useState('');
   const [confirmNewPassword, setConfirmNewPassword] = React.useState('');
+  const [staySignedIn, setStaySignedIn] = React.useState(true);
   const [createLoading, setCreateLoading] = React.useState(false);
   // Set only by a successful create, so the offer is never shown to an
   // existing configuration.
@@ -1552,6 +1573,7 @@ function Content() {
     string[]
   >([]);
   const { status } = useStatus();
+  const sessionsEnabled = status?.settings.configSessionsEnabled !== false;
   const { user: sessionUser } = useSession();
   const { data: profileData } = useQuery({
     ...configProfilesQuery,
@@ -1636,6 +1658,7 @@ function Content() {
   const [lookingUpQuickConnect, setLookingUpQuickConnect] =
     React.useState(false);
   const [quickConnectPersona, setQuickConnectPersona] = React.useState('');
+  const [quickConnectPin, setQuickConnectPin] = React.useState('');
   const [approvingQuickConnect, setApprovingQuickConnect] =
     React.useState(false);
   const aniyomiModal = useDisclosure(false);
@@ -1699,6 +1722,11 @@ function Content() {
       setUuid(result.uuid);
       setEncryptedPassword((result as CreateUserResponse).encryptedPassword);
       setPassword(newPassword);
+      if (sessionsEnabled) {
+        void createConfigSession(result.uuid, newPassword, staySignedIn).catch(
+          () => {}
+        );
+      }
       if (!linkOfferDismissed()) {
         setLinkOfferFor({ uuid: result.uuid, password: newPassword });
       }
@@ -1864,9 +1892,13 @@ function Content() {
     ? (jellyfinPersonas.find((p) => p.id === quickConnectPersona)?.name ??
       quickConnectPersona)
     : null;
-  // Carries the password, so the picker can list users before sign-in.
-  const jellyfinPickerUrl =
-    uuid && encryptedPassword
+  const quickConnectLocked = quickConnectPersona
+    ? !!jellyfinPersonas.find((p) => p.id === quickConnectPersona)?.lock
+    : !!userData.jellyfin?.primary?.lock;
+  // An alias makes it short enough to type on a TV.
+  const jellyfinPickerUrl = aliasForInstall
+    ? `${baseUrl}/jellyfin/u/${aliasForInstall}`
+    : uuid && encryptedPassword
       ? `${baseUrl}/jellyfin/${uuid}/${encryptedPassword}`
       : '';
   const copyJellyfinPickerUrl = async () => {
@@ -1889,7 +1921,7 @@ function Content() {
     setLookingUpQuickConnect(true);
     const timer = setTimeout(() => {
       getJellyfinQuickConnectPending(
-        { uuid, password: password || encryptedPassword || null },
+        { uuid, password: password || null },
         quickConnectCode
       )
         .then((result) => {
@@ -1911,7 +1943,7 @@ function Content() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [quickConnectCode, uuid, password, encryptedPassword]);
+  }, [quickConnectCode, uuid, password]);
 
   const quickConnectRequestedAgo = (iso: string) => {
     const seconds = Math.max(
@@ -1927,6 +1959,7 @@ function Content() {
     setQuickConnectCode('');
     setQuickConnectPending(null);
     setQuickConnectPersona('');
+    setQuickConnectPin('');
   };
 
   const approveQuickConnect = async () => {
@@ -1934,9 +1967,10 @@ function Content() {
     setApprovingQuickConnect(true);
     try {
       const result = await approveJellyfinQuickConnect(
-        { uuid, password: password || encryptedPassword || null },
+        { uuid, password: password || null },
         quickConnectCode,
-        quickConnectPersona || undefined
+        quickConnectPersona || undefined,
+        quickConnectLocked ? quickConnectPin : undefined
       );
       toast.success(
         result.device?.app
@@ -2092,6 +2126,8 @@ function Content() {
             confirmNewPassword={confirmNewPassword}
             onNewPasswordChange={setNewPassword}
             onConfirmNewPasswordChange={setConfirmNewPassword}
+            staySignedIn={sessionsEnabled ? staySignedIn : null}
+            onStaySignedInChange={setStaySignedIn}
             createLoading={createLoading}
           />
         ) : (
@@ -2693,11 +2729,12 @@ function Content() {
                         </Button>
                       </div>
                       <p className="text-xs text-gray-500">
-                        {profileAlias
-                          ? 'Any password is accepted for an alias.'
-                          : 'The password is your configuration password.'}
+                        The password is your configuration password.
                         {jellyfinPersonas.length > 0 &&
                           ' Add /<user> to sign in as a user.'}
+                        {(jellyfinPersonas.some((p) => p.lock) ||
+                          !!userData.jellyfin?.primary?.lock) &&
+                          ' For a user with a PIN, add /<PIN> to the password.'}
                       </p>
                     </div>
 
@@ -2724,9 +2761,18 @@ function Content() {
                           </Button>
                         </div>
                         <p className="text-xs text-gray-500">
-                          Lists this configuration and its users at sign-in,
-                          with no password to type. It contains your password,
-                          so keep it within your household.
+                          Lists this configuration&apos;s users at sign-in, so
+                          there is no UUID to type.{' '}
+                          {jellyfin?.pinSignIn
+                            ? 'A user with a PIN of 6 or more digits signs in here with that PIN alone; everyone else still needs your password.'
+                            : 'Signing in still needs your password.'}{' '}
+                          It holds the same secret as your install links, so
+                          keep it within your household.
+                          {aliasForInstall
+                            ? ' Your alias stands in for the UUID and password; the long address still works.'
+                            : sessionUser
+                              ? ' A share alias in your profile makes it short enough to type on a TV.'
+                              : ''}
                         </p>
                       </div>
                     )}
@@ -2779,11 +2825,12 @@ function Content() {
                             <Select
                               label="Sign in as"
                               value={quickConnectPersona || '__account__'}
-                              onValueChange={(value) =>
+                              onValueChange={(value) => {
                                 setQuickConnectPersona(
                                   value === '__account__' ? '' : value
-                                )
-                              }
+                                );
+                                setQuickConnectPin('');
+                              }}
                               options={[
                                 {
                                   label: jellyfinAccountName,
@@ -2796,11 +2843,30 @@ function Content() {
                               ]}
                             />
                           )}
+                          {quickConnectLocked && (
+                            <TextInput
+                              label="PIN"
+                              type="password"
+                              inputMode="numeric"
+                              autoComplete="off"
+                              help="This user has a PIN."
+                              value={quickConnectPin}
+                              onValueChange={(value) =>
+                                setQuickConnectPin(
+                                  value.replace(/\D/g, '').slice(0, 12)
+                                )
+                              }
+                            />
+                          )}
                           <div className="flex items-center gap-2">
                             <Button
                               onClick={approveQuickConnect}
                               intent="primary"
-                              disabled={approvingQuickConnect}
+                              disabled={
+                                approvingQuickConnect ||
+                                (quickConnectLocked &&
+                                  quickConnectPin.length < 4)
+                              }
                               loading={approvingQuickConnect}
                             >
                               Approve
@@ -2817,6 +2883,63 @@ function Content() {
                           </div>
                         </div>
                       )}
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                      <div className="min-w-0 space-y-1">
+                        <p className="text-sm font-medium text-white">
+                          Web app
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Browse, see what is playing and manage watch history
+                          in your browser.
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        intent="gray-outline"
+                        rounded
+                        className="w-full shrink-0 sm:w-auto"
+                        leftIcon={<MonitorPlay className="h-4 w-4" />}
+                        onClick={() =>
+                          window.open(
+                            `${jellyfinServerUrl}/web/`,
+                            '_blank',
+                            'noopener'
+                          )
+                        }
+                      >
+                        Open
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                      <div className="min-w-0 space-y-1">
+                        <p className="text-sm font-medium text-white">
+                          Desktop app
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          A Jellyfin app for Windows, Mac and Linux: the web app
+                          with a player that plays what a browser can&apos;t.
+                          Sign in with one of the addresses above.
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        intent="gray-outline"
+                        rounded
+                        className="w-full shrink-0 sm:w-auto"
+                        leftIcon={<DownloadIcon className="h-4 w-4" />}
+                        onClick={() =>
+                          window.open(
+                            DESKTOP_DOWNLOAD_URL,
+                            '_blank',
+                            'noopener'
+                          )
+                        }
+                      >
+                        Download
+                      </Button>
                     </div>
 
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

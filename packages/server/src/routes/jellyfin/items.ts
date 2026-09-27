@@ -6,17 +6,24 @@ import {
   buildGenre,
   buildMediaSource,
   buildPerson,
+  findPerson,
+  imageTagsFor,
+  recallImages,
+  withPersonDetails,
   buildSeason,
   buildView,
+  Cache,
   collectionMembers,
   viewCollectionType,
   config as appConfig,
   contentDescriptor,
   decodeItemId,
+  descriptorForWatchRow,
   descriptorOf,
   encodeItemId,
   idNeedsCatalogs,
   episodeDescriptor,
+  extractAuth,
   findCatalog,
   groupSeasons,
   hasProgrammeVideos,
@@ -35,6 +42,7 @@ import {
   seriesIdOf,
   stripInternal,
   subtitleFormatFor,
+  msToTicks,
   userDataFromRow,
   watchRowsFor,
   writeMemoPointer,
@@ -53,7 +61,10 @@ import {
 } from '@aiostreams/core';
 import { stremioStreamRateLimiter } from '../../middlewares/ratelimit.js';
 import { StaticFiles } from '../../utils/static-errors.js';
-import type { JellyfinRequestContext } from './context.js';
+import {
+  ANDROID_PLAYER_CLIENT,
+  type JellyfinRequestContext,
+} from './context.js';
 import { getMetaLoose, resolveMarkerId, resolvePlayback } from './resolve.js';
 
 export function contentRefOf(d: ContentDescriptor): ContentRef {
@@ -142,6 +153,7 @@ export async function attachUserData(
         {
           ...(item.UserData as UserItemDataDto),
           ...(row ? { IsFavorite: row.favorite } : {}),
+          ...(row?.dropped ? { Likes: false } : {}),
         },
         played.length,
         aired.length
@@ -153,6 +165,7 @@ export async function attachUserData(
       item.UserData = {
         ...(item.UserData as object),
         IsFavorite: row.favorite,
+        ...(row.dropped ? { Likes: false } : {}),
       };
     } else {
       const runtimeMs =
@@ -376,8 +389,22 @@ export async function itemFromDescriptor(
     }
     case 'genre':
       return buildGenre(ctx.build, d.t, d.c, d.g);
-    case 'person':
-      return buildPerson(ctx.build, d.n);
+    case 'person': {
+      const item = buildPerson(ctx.build, d.n);
+      const found = await findPerson(ctx.userData, d.n);
+      const person = found ? withPersonDetails(item, found.person) : item;
+      if ((person.ImageTags as Record<string, string> | undefined)?.Primary)
+        return person;
+      // Without TMDB, the photo is the one a cast list already showed.
+      const photo = (await recallImages(item.Id))?.Primary;
+      return photo
+        ? {
+            ...person,
+            ImageTags: imageTagsFor({ Primary: photo }).ImageTags,
+            PrimaryImageAspectRatio: 0.6666,
+          }
+        : person;
+    }
     case 'source':
       return null;
     case 'boxset': {
@@ -474,6 +501,48 @@ function isResumable(item: JellyfinItem): boolean {
   return !ud.Played && ud.PlaybackPositionTicks > 0;
 }
 
+const SUMMARY_TTL = 600;
+const SUMMARY_MISS_TTL = 30;
+const SUMMARY_OMIT = [
+  'MediaSources',
+  'MediaStreams',
+  'People',
+  'Tags',
+  'RemoteTrailers',
+  'UserData',
+];
+
+const summaryCache = Cache.getInstance<
+  string,
+  JellyfinItem | { missing: true }
+>('jellyfin-summary-items', 5_000, 'memory');
+
+/** A light item for a watch row, carrying the row's runtime when it has one. */
+export async function summaryItem(
+  ctx: JellyfinRequestContext,
+  row: Pick<
+    WatchStateRow,
+    'itemKey' | 'mediaType' | 'baseId' | 'season' | 'episode' | 'videoId'
+  > & { durationMs: number }
+): Promise<JellyfinItem | null> {
+  const key = `${ctx.userId}|${ctx.scope()}|${row.itemKey}|${row.durationMs}`;
+  const hit = await summaryCache.get(key);
+  if (hit) return 'missing' in hit ? null : hit;
+
+  const built = await itemFromDescriptor(ctx, descriptorForWatchRow(row)).catch(
+    () => null
+  );
+  if (!built) {
+    await summaryCache.set(key, { missing: true }, SUMMARY_MISS_TTL);
+    return null;
+  }
+  const item = stripInternal(built) as JellyfinItem & Record<string, unknown>;
+  for (const field of SUMMARY_OMIT) delete item[field];
+  if (row.durationMs > 0) item.RunTimeTicks = msToTicks(row.durationMs);
+  await summaryCache.set(key, item, SUMMARY_TTL);
+  return item;
+}
+
 export async function nextUpForSeries(
   ctx: JellyfinRequestContext,
   d: { t: string; i: string },
@@ -540,9 +609,10 @@ function resolveOnOpen(ctx: JellyfinRequestContext): boolean {
   }
 }
 
-export function subtitleUrlFor(req: Request, itemId: string, msid: string) {
+/** Relative to the server's base, which clients join it onto, as Jellyfin does. */
+export function subtitleUrlFor(itemId: string, msid: string) {
   return (index: number, format: string) =>
-    `${req.baseUrl}/Videos/${itemId}/${msid}/Subtitles/${index}/0/Stream.${format}`;
+    `/Videos/${itemId}/${msid}/Subtitles/${index}/0/Stream.${format}`;
 }
 
 export function nothingToPlayPath(
@@ -566,6 +636,13 @@ export function mediaSourcesFrom(
 ): JellyfinMediaSource[] {
   const format = (sourceExtension: string) =>
     subtitleFormatFor(opts.profile, ctx.client.name, sourceExtension);
+  // Not ctx.token, which is minted when the request had none.
+  const token = ctx.apiKey
+    ? undefined
+    : extractAuth({
+        header: (name) => req.get(name),
+        query: req.query as Record<string, unknown>,
+      }).token;
   let ordered = memo.sources;
   if (opts.requestedMsid) {
     const idx = ordered.findIndex((s) => s.msid === opts.requestedMsid);
@@ -580,7 +657,9 @@ export function mediaSourcesFrom(
     buildMediaSource(record, {
       id: i === 0 ? opts.firstId : record.msid,
       subtitleFormat: format,
-      subtitleUrl: subtitleUrlFor(req, memo.itemId, record.msid),
+      subtitleUrl: subtitleUrlFor(memo.itemId, record.msid),
+      subtitleToken: token,
+      protocol: ctx.client.name === ANDROID_PLAYER_CLIENT ? 'File' : 'Http',
       runtimeMs: memo.runtimeMs,
       includeExtension: true,
       hasSegments: opts.hasSegments,
@@ -604,6 +683,7 @@ export function placeholderSources(
     uuid: ctx.uuid,
     encryptedPassword: ctx.encryptedPassword,
     itemId,
+    persona: ctx.persona?.id,
   }).catch(() => undefined);
   return [
     placeholderMediaSource(itemId, 'Streams resolve on play', path),
@@ -620,7 +700,7 @@ export async function detailItem(
     forceResolve?: boolean;
     requestedMsid?: string;
     overrideId?: string;
-    /** Batch lookups ask for metadata, not a version list, so they never resolve. */
+    /** Lookups that did not ask for a version list never resolve. */
     resolve?: boolean;
   } = {}
 ): Promise<JellyfinItem | null> {

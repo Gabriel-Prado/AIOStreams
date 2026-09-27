@@ -21,7 +21,7 @@ import {
   viewId,
 } from './ids.js';
 import { imageTagsFor, rememberImages } from './images.js';
-import { listPlaceholderSources, TICKS_PER_MS } from './media.js';
+import { listPlaceholderSources, msToTicks } from './media.js';
 import { getSimpleTextHash } from '../utils/crypto.js';
 import type {
   ContentDescriptor,
@@ -119,13 +119,14 @@ export function userDataFromRow(
   if (!row) return defaultUserData(itemId);
   const duration = runtimeMs || row.durationMs;
   const ud: UserItemDataDto = {
-    PlaybackPositionTicks: row.played ? 0 : row.positionMs * TICKS_PER_MS,
+    PlaybackPositionTicks: row.played ? 0 : msToTicks(row.positionMs),
     PlayCount: row.playCount,
     IsFavorite: row.favorite,
     Played: row.played,
     Key: itemId,
     ItemId: itemId,
   };
+  if (row.dropped) ud.Likes = false;
   if (row.lastPlayedAt)
     ud.LastPlayedDate = new Date(row.lastPlayedAt).toISOString();
   if (!row.played && duration > 0 && row.positionMs > 0) {
@@ -465,7 +466,7 @@ export function buildContentItem(
     CriticRating: enrichment.criticRating,
     OfficialRating: enrichment.certification,
     CustomRating: enrichment.customRating,
-    RunTimeTicks: runtimeMs ? runtimeMs * TICKS_PER_MS : undefined,
+    RunTimeTicks: runtimeMs ? msToTicks(runtimeMs) : undefined,
     Genres: genres,
     GenreItems: genres.map((g) => {
       const target =
@@ -697,7 +698,7 @@ export function buildEpisode(
     ProductionYear: premiere
       ? new Date(premiere).getUTCFullYear()
       : seriesItem.ProductionYear,
-    RunTimeTicks: runtimeMs ? runtimeMs * TICKS_PER_MS : undefined,
+    RunTimeTicks: runtimeMs ? msToTicks(runtimeMs) : undefined,
     ...imageTagsFor({ Primary: images.Primary }),
     ParentBackdropItemId: images.Backdrop ? seriesItem.Id : undefined,
     ParentBackdropImageTags: seriesItem.BackdropImageTags,
@@ -709,7 +710,7 @@ export function buildEpisode(
     PrimaryImageAspectRatio: 1.7777,
     Genres: seriesItem.Genres,
     GenreItems: seriesItem.GenreItems,
-    CommunityRating: extra.rating ?? seriesItem.CommunityRating,
+    CommunityRating: extra.rating,
     OfficialRating: seriesItem.OfficialRating,
     People: peopleDtos(extra.people),
     ProviderIds: extra.providerIds,
@@ -767,7 +768,7 @@ export function buildBoxSetChild(
     PremiereDate: premiere,
     DateCreated: premiere ?? EPOCH_DATE,
     ProductionYear: premiere ? new Date(premiere).getUTCFullYear() : undefined,
-    RunTimeTicks: runtimeMs ? runtimeMs * TICKS_PER_MS : undefined,
+    RunTimeTicks: runtimeMs ? msToTicks(runtimeMs) : undefined,
     ProviderIds: providerIds,
     ExternalUrls: externalUrls(providerIds, 'movie'),
     ...imageTagsFor(images),

@@ -52,6 +52,7 @@ const statusInfo = async (): Promise<StatusResponse> => {
         maxCatalogItems: appConfig.jellyfin.maxCatalogItems,
         maxLibraries: appConfig.jellyfin.maxLibraries,
         maxPersonas: appConfig.jellyfin.maxPersonas,
+        pinSignIn: appConfig.jellyfin.pinSignIn,
         maxTrackers: appConfig.watchState.maxSinks,
         segments: {
           enabled: segmentsEnabled(),
@@ -80,6 +81,9 @@ const statusInfo = async (): Promise<StatusResponse> => {
           apiKey: !!appConfig.metadata.tvdb.apiKey,
         },
       },
+      remuxdb: {
+        enabled: appConfig.remuxdb.enabled,
+      },
       regexAccess: {
         level: appConfig.userLimits.regex.access,
         ...allowedRegexes,
@@ -92,7 +96,8 @@ const statusInfo = async (): Promise<StatusResponse> => {
         access: appConfig.userLimits.variants.access,
         max: appConfig.userLimits.variants.max,
         maxScriptLength: appConfig.userLimits.variants.maxScriptLength,
-        maxTotalInstructions: appConfig.userLimits.variants.maxTotalInstructions,
+        maxTotalInstructions:
+          appConfig.userLimits.variants.maxTotalInstructions,
         maxValueDepth: appConfig.userLimits.variants.maxValueDepth,
         maxPathSegments: appConfig.userLimits.variants.maxPathSegments,
         maxPathMatches: appConfig.userLimits.variants.maxPathMatches,

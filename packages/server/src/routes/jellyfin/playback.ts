@@ -4,6 +4,7 @@ import {
   createLogger,
   lookupFor,
   couldHaveSegments,
+  isMemoFresh,
   playableSources,
   resolveByItem,
   segmentsFor,
@@ -74,7 +75,8 @@ async function locate(
       (await contextFromCredentials(
         req,
         pointer.uuid,
-        pointer.encryptedPassword
+        pointer.encryptedPassword,
+        pointer.persona
       )) ?? undefined;
     if (!ctx) return null;
   }
@@ -117,24 +119,41 @@ async function locate(
 /* A client retrying a failed play must not rerun the pipeline against an addon that is failing. */
 const EMPTY_MEMO_REUSE_MS = 30_000;
 
-async function ensureMemo(loc: Located): Promise<PlaybackMemo | null> {
-  if (loc.memo && playableSources(loc.memo.sources).length) return loc.memo;
-  if (loc.descriptor.k !== 'movie' && loc.descriptor.k !== 'episode')
-    return null;
-  if (loc.memo && Date.now() - loc.memo.createdAt < EMPTY_MEMO_REUSE_MS)
-    return loc.memo;
-  return resolvePlayback(loc.ctx, loc.descriptor, { force: true });
+async function ensureMemo(
+  loc: Located,
+  /* `current` reruns a memo past its reuse window, `force` any memo. */
+  opts: { current?: boolean; force?: boolean } = {}
+): Promise<PlaybackMemo | null> {
+  const { memo, descriptor } = loc;
+  const resolvable = descriptor.k === 'movie' || descriptor.k === 'episode';
+  const rerun =
+    resolvable && (opts.force || (opts.current && memo && !isMemoFresh(memo)));
+  if (!rerun) {
+    if (memo && playableSources(memo.sources).length) return memo;
+    if (!resolvable) return null;
+    if (memo && Date.now() - memo.createdAt < EMPTY_MEMO_REUSE_MS) return memo;
+  }
+  return resolvePlayback(loc.ctx, descriptor, { force: true });
+}
+
+/**
+ * A client that lists versions here rather than from the item page can ask
+ * for a list no older than the reuse window (`Fresh`) or a new run that
+ * retries failed addons (`Refresh`). A named version keeps its list.
+ */
+function listingOptions(req: Request, loc: Located) {
+  if (!req.jf || loc.requestedMsid) return {};
+  const body = bodyOf(req);
+  return { current: body.Fresh === true, force: body.Refresh === true };
 }
 
 function pickSource(
   memo: PlaybackMemo,
   requestedMsid?: string
 ): MediaSourceRecord | undefined {
-  if (requestedMsid)
-    return (
-      memo.sources.find((s) => s.msid === requestedMsid) ?? memo.sources[0]
-    );
-  return memo.sources[0];
+  return requestedMsid
+    ? memo.sources.find((s) => s.msid === requestedMsid)
+    : memo.sources[0];
 }
 
 /**
@@ -162,7 +181,7 @@ async function playbackInfo(req: Request, res: Response) {
     return;
   }
   const profile = bodyOf(req).DeviceProfile as DeviceProfile | undefined;
-  const memo = await ensureMemo(loc);
+  const memo = await ensureMemo(loc, listingOptions(req, loc));
   if (!memo || !memo.sources.length) {
     res.json({
       MediaSources: placeholderSources(req, loc.ctx, loc.itemId, true),
@@ -172,9 +191,13 @@ async function playbackInfo(req: Request, res: Response) {
     return;
   }
   await enrichSourceSubtitles(loc.ctx, memo, loc.requestedMsid);
+  // A version no longer listed must not lend its id to another.
+  const requested = memo.sources.some((s) => s.msid === loc.requestedMsid)
+    ? loc.requestedMsid
+    : undefined;
   const sources = mediaSourcesFrom(req, loc.ctx, memo, {
-    firstId: loc.requestedMsid ?? loc.itemId,
-    requestedMsid: loc.requestedMsid,
+    firstId: requested ?? loc.itemId,
+    requestedMsid: requested,
     profile,
     hasSegments: hasSegments(loc.ctx, memo),
   });

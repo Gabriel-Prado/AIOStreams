@@ -21,6 +21,7 @@ import {
   bodyOf,
   jf,
   param,
+  qb,
   qs,
   type JellyfinRequestContext,
 } from './context.js';
@@ -31,7 +32,7 @@ import {
   episodesForSeries,
   itemFromDescriptor,
 } from './items.js';
-import { reportBulkMark, reportPlayback, reportWatchlist } from './handoff.js';
+import { reportBulkMark, reportListChange, reportPlayback } from './handoff.js';
 import { pickSource } from './playback.js';
 
 const router: Router = Router({ mergeParams: true });
@@ -205,7 +206,13 @@ async function record(
     durationMs,
     snapshot: snapshotOf(item),
   };
-  const row = await getWatchStateProvider().record(ctx.watch, event);
+  const provider = getWatchStateProvider();
+  // Read before the start clears it, so addons that only keep lists hear the undrop.
+  const seriesKey = type === 'start' ? identity.seriesKey : null;
+  const undrops =
+    !!seriesKey &&
+    !!(await provider.getMany(ctx.watch, [seriesKey])).get(seriesKey)?.dropped;
+  const row = await provider.record(ctx.watch, event);
 
   if (type === 'start') {
     await openWatchSession(session, ref, {
@@ -219,6 +226,12 @@ async function record(
       positionMs,
       durationMs,
     });
+    if (undrops)
+      await reportListChange(ctx, 'undropped', {
+        kind: 'series',
+        type: ref.type,
+        baseId: ref.baseId,
+      });
     return;
   }
 
@@ -411,6 +424,53 @@ async function setPlayed(
   await reportPlayback(ctx, kind, ref, { row, item });
 }
 
+/** An episode and every aired one before it, specials aside, as one bulk mark. */
+async function setPlayedUpTo(
+  ctx: JellyfinRequestContext,
+  d: Extract<ContentDescriptor, { k: 'episode' }>
+) {
+  const provider = getWatchStateProvider();
+  const r = await episodesForSeries(ctx, d);
+  const now = Date.now();
+  const marked: ContentRef[] = [];
+  for (const ep of r?.episodes ?? []) {
+    const epd = descriptorOf(ep);
+    if (!epd || epd.k !== 'episode') continue;
+    if ((ep.UserData as { Played?: boolean } | undefined)?.Played) continue;
+    const before =
+      epd.s === d.s ? epd.e <= d.e : d.s > 0 && epd.s > 0 && epd.s < d.s;
+    if (!before) continue;
+    if (Date.parse(String(ep.PremiereDate ?? '')) > now) continue;
+    const epRef = contentRefOf(epd);
+    await provider.record(ctx.watch, {
+      type: 'played',
+      identity: await watchIdentityFor(epRef),
+      snapshot: snapshotOf(ep),
+    });
+    marked.push(epRef);
+  }
+  await reportBulkMark(
+    ctx,
+    'played',
+    { t: d.t, i: d.i },
+    marked,
+    r?.seriesItem
+  );
+}
+
+router.post(
+  '/AIOStreams/PlayedUpTo/:itemId',
+  jf(async (req, res, ctx) => {
+    const d = await descriptorFor(ctx, param(req, 'itemId'));
+    if (d?.k !== 'episode') {
+      res.status(404).json({ Message: 'Episode not found' });
+      return;
+    }
+    await setPlayedUpTo(ctx, d);
+    res.status(204).end();
+  })
+);
+
 const PLAYED_PATHS = [
   '/UserPlayedItems/:itemId',
   '/Users/:userId/PlayedItems/:itemId',
@@ -474,8 +534,65 @@ async function setFavorite(
   });
   // Trackers keep watchlists of titles, not of episodes or collections.
   if (item?.Type === 'Movie' || item?.Type === 'Series')
-    await reportWatchlist(ctx, favorite, ref, item);
+    await reportListChange(
+      ctx,
+      favorite ? 'watchlisted' : 'unwatchlisted',
+      ref,
+      item
+    );
 }
+
+/** A dislike drops a show; a like or a cleared rating undrops it. */
+async function setDropped(
+  ctx: JellyfinRequestContext,
+  d: ContentDescriptor,
+  dropped: boolean
+) {
+  const ref = contentRefOf(d);
+  const identity = await watchIdentityFor(ref);
+  const provider = getWatchStateProvider();
+  const held = (await provider.getMany(ctx.watch, [identity.itemKey])).get(
+    identity.itemKey
+  );
+  if (!dropped && !held?.dropped) return;
+  const item = await itemFromDescriptor(ctx, d).catch(() => null);
+  await provider.record(ctx.watch, {
+    type: dropped ? 'dropped' : 'undropped',
+    identity,
+    snapshot: snapshotOf(item),
+  });
+  await reportListChange(ctx, dropped ? 'dropped' : 'undropped', ref, item);
+}
+
+const RATING_PATHS = [
+  '/UserItems/:itemId/Rating',
+  '/Users/:userId/Items/:itemId/Rating',
+];
+router.post(
+  RATING_PATHS,
+  jf(async (req, res, ctx) => {
+    const d = await descriptorFor(ctx, param(req, 'itemId'));
+    if (!d) {
+      res.status(404).json({ Message: 'Item not found' });
+      return;
+    }
+    // Only a show can be dropped.
+    if (d.k === 'series') await setDropped(ctx, d, qb(req, 'Likes') === false);
+    res.json((await userDataFor(ctx, d)) ?? {});
+  })
+);
+router.delete(
+  RATING_PATHS,
+  jf(async (req, res, ctx) => {
+    const d = await descriptorFor(ctx, param(req, 'itemId'));
+    if (!d) {
+      res.status(404).json({ Message: 'Item not found' });
+      return;
+    }
+    if (d.k === 'series') await setDropped(ctx, d, false);
+    res.json((await userDataFor(ctx, d)) ?? {});
+  })
+);
 
 const FAVORITE_PATHS = [
   '/UserFavoriteItems/:itemId',

@@ -13,18 +13,17 @@ import {
   getSimpleTextHash,
   isConfigUuid,
   isEncrypted,
+  PERSONA_PIN_PATTERN,
+  verifyHash,
   mintToken,
   readToken,
   resolveConfigAlias,
   memoScope,
   personaUserId,
-  resolveVariantSelector,
   serverId as instanceServerId,
   sql,
   UserRepository,
   validateConfig,
-  VARIANT_PATH_PARAM,
-  VARIANT_QUERY_PARAM,
   decryptString,
   type ClientInfo,
   type ItemBuildContext,
@@ -42,8 +41,15 @@ import {
 } from '@aiostreams/core';
 import { syncUserDataUrls } from '../../utils/syncUserData.js';
 import { buildVariantRequestContext } from '../../utils/variant-context.js';
+import { attemptLimiter } from '../../middlewares/ratelimit.js';
 
 const logger = createLogger('jellyfin');
+
+/**
+ * The Android app's own player, which plays an `Http` source's `Path` as a
+ * live HLS playlist, so it is sent through the stream route instead.
+ */
+export const ANDROID_PLAYER_CLIENT = 'Jellyfin for Android';
 
 export interface JellyfinRequestContext {
   uuid: string;
@@ -61,7 +67,6 @@ export interface JellyfinRequestContext {
   baseUrl: string;
   token: string;
   client: ClientInfo;
-  preAuthenticated: boolean;
   build: ItemBuildContext;
   engine(): Promise<AIOStreams>;
   /** The primary user's configuration, whose sinks are the ones trackers sync with. */
@@ -138,6 +143,20 @@ async function loadConfig(
     updatedAt: await configUpdatedAt(uuid),
     checkedAt: Date.now(),
   };
+}
+
+/**
+ * The configuration a `/u/<alias>` picker address names. Aliases are lowercase,
+ * and a TV keyboard may capitalise what was typed.
+ */
+export async function resolvePickerAlias(
+  alias: string
+): Promise<{ uuid: string; encryptedPassword: string } | null> {
+  const lower = alias.toLowerCase();
+  return (
+    (await resolveConfigAlias(alias)) ??
+    (lower !== alias ? await resolveConfigAlias(lower) : null)
+  );
 }
 
 export async function resolveUuid(uuidOrAlias: string): Promise<string | null> {
@@ -234,6 +253,64 @@ export function personaByName(
       (p) => p.id === wanted || p.name.trim().toLowerCase() === wanted
     ) ?? null
   );
+}
+
+export function personaLocked(
+  persona: JellyfinPersona | null | undefined
+): boolean {
+  return !!persona?.lock;
+}
+
+/** The PIN hash of a persona, or of the account for `null`. */
+function lockOf(
+  userData: Pick<UserData, 'jellyfin'>,
+  persona: JellyfinPersona | null
+): string | undefined {
+  return persona ? persona.lock : userData.jellyfin?.primary?.lock;
+}
+
+export function accountLocked(userData: Pick<UserData, 'jellyfin'>): boolean {
+  return !!lockOf(userData, null);
+}
+
+export function lockTag(
+  userData: Pick<UserData, 'jellyfin'>,
+  persona: JellyfinPersona | null
+): string {
+  const lock = lockOf(userData, persona);
+  return lock ? getSimpleTextHash(lock).slice(0, 12) : '';
+}
+
+/** Sent when the credential was right but a PIN is missing or wrong, so a client can ask for it. */
+export const PIN_REQUIRED = 'PIN required';
+
+// Shared across replicas when Redis is set, so a guess cannot be spread over them.
+const pinAttempts = attemptLimiter(15 * 60, 5, 'jellyfin-pin');
+
+/**
+ * Whether `pin` opens the user, a persona or the account for `null`. Past the
+ * attempt limit even the right PIN is refused for a while.
+ */
+export async function userUnlocks(
+  uuid: string,
+  userData: Pick<UserData, 'jellyfin'>,
+  persona: JellyfinPersona | null,
+  pin: string
+): Promise<boolean> {
+  const lock = lockOf(userData, persona);
+  if (!lock) return true;
+  // No PIN at all is a prompt, not a guess.
+  if (!pin) return false;
+  const key = `${uuid}:${persona?.id ?? ''}`;
+  if (!(await pinAttempts.take(key))) {
+    logger.warn({ uuid, persona: persona?.id }, 'user pin locked out');
+    return false;
+  }
+  if (PERSONA_PIN_PATTERN.test(pin) && (await verifyHash(pin, lock))) {
+    await pinAttempts.reset(key);
+    return true;
+  }
+  return false;
 }
 
 export function requestOrigin(req: Request): string {
@@ -363,9 +440,10 @@ async function buildContext(
   encryptedPassword: string,
   token: string | undefined,
   client: ClientInfo,
-  preAuthenticated: boolean,
   personaKey: string,
-  keyClaim?: ApiKeyClaim
+  keyClaim?: ApiKeyClaim,
+  /** The token's PIN tag; absent when the context is not built from a token. */
+  lockClaim?: string
 ): Promise<JellyfinRequestContext | typeof UNKNOWN_USER | null> {
   const entry = await resolveConfigEntry(uuid, encryptedPassword);
   if (!entry) return null;
@@ -382,28 +460,23 @@ async function buildContext(
     const named = keyClaim.userId
       ? userForId(uuid, userData, keyClaim.userId)
       : null;
-    if (named === undefined) return UNKNOWN_USER;
+    // A key goes to a tool, not a person, so it must not open a PIN.
+    if (named === undefined || personaLocked(named)) return UNKNOWN_USER;
     persona = named;
   } else {
     // A token naming a persona that no longer exists is no longer valid.
     persona = personaKey ? personaById(userData, personaKey) : null;
     if (personaKey && !persona) return null;
+    if (lockClaim !== undefined && lockClaim !== lockTag(userData, persona))
+      return null;
   }
   const primaryVariants = userData.jellyfin?.primary?.variants ?? [];
   const variantContext = buildVariantRequestContext(req, 'jellyfin');
 
   try {
-    const { ids: fromUrl, location } = resolveVariantSelector(
-      (req.params as Record<string, unknown>)[VARIANT_PATH_PARAM],
-      req.query[VARIANT_QUERY_PARAM]
-    );
-    // The URL is the more immediate choice, so it applies last and wins.
     const own = persona ? (persona.variants ?? []) : primaryVariants;
-    const linked = own.filter((id) => !fromUrl.includes(id));
-    const selected = [...linked, ...fromUrl];
-    const result = await activateVariants(userData, selected, variantContext);
+    const result = await activateVariants(userData, own, variantContext);
     userData = result.userData;
-    if (fromUrl.length) userData.variantSelectorLocation = location;
   } catch (error) {
     logger.warn(
       {
@@ -467,9 +540,9 @@ async function buildContext(
         p: encryptedPassword,
         d: client.deviceId,
         k: persona?.id,
+        l: lockTag(baseUserData, persona) || undefined,
       }),
     client,
-    preAuthenticated,
     build: {
       serverId: serverIdValue,
       userId,
@@ -495,24 +568,35 @@ export const jellyfinContext: RequestHandler = async (req, res, next) => {
 
     let uuid: string | undefined;
     let encryptedPassword: string | undefined;
-    let preAuthenticated = false;
-    // Read on both branches: the path proves the credential, the token names the persona.
     const payload = token ? readToken(token) : null;
 
+    // A picker address only names the configuration; a token still signs in.
     if (params.uuid && params.encryptedPassword) {
       if (!isEncrypted(params.encryptedPassword)) {
         next('router');
         return;
       }
-      const resolved = await resolveUuid(params.uuid);
-      if (!resolved) {
+      if (!isConfigUuid(params.uuid)) {
         res.status(401).json({ Message: 'Unknown configuration' });
         return;
       }
-      uuid = resolved;
-      encryptedPassword = params.encryptedPassword;
-      preAuthenticated = true;
-    } else if (payload) {
+      req.jfMount = {
+        uuid: params.uuid,
+        encryptedPassword: params.encryptedPassword,
+      };
+    } else if (params.alias) {
+      const target = await resolvePickerAlias(params.alias);
+      if (!target) {
+        res.status(401).json({ Message: 'Unknown configuration' });
+        return;
+      }
+      req.jfMount = target;
+    }
+    if (
+      payload &&
+      (!req.jfMount ||
+        payload.u.toLowerCase() === req.jfMount.uuid.toLowerCase())
+    ) {
       uuid = payload.u;
       encryptedPassword = payload.p;
     }
@@ -527,17 +611,15 @@ export const jellyfinContext: RequestHandler = async (req, res, next) => {
       return;
     }
 
-    // A token minted for another configuration lends it no persona or key.
-    const ownToken = payload && payload.u === uuid ? payload : null;
     const ctx = await buildContext(
       req,
       uuid,
       encryptedPassword,
       token,
       client,
-      preAuthenticated,
-      ownToken?.k ?? '',
-      ownToken?.a ? { id: ownToken.a, userId: urlUserId(req) } : undefined
+      payload?.k ?? '',
+      payload?.a ? { id: payload.a, userId: urlUserId(req) } : undefined,
+      payload?.l ?? ''
     );
     if (ctx === UNKNOWN_USER) {
       res.status(404).json({ Message: 'User not found' });
@@ -649,7 +731,6 @@ export async function contextFromCredentials(
       deviceId: 'unknown',
       version: '0',
     },
-    false,
     personaKey
   );
   return ctx === UNKNOWN_USER ? null : ctx;

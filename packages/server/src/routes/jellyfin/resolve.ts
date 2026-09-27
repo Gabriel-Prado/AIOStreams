@@ -18,7 +18,9 @@ import {
   labelFrom,
   isMemoFresh,
   resolveByItem,
+  sourceIdentities,
   sourceRecordFrom,
+  generateBingeGroup,
   writePlaybackMemo,
   type ContentDescriptor,
   type MediaSourceRecord,
@@ -171,6 +173,17 @@ function noticeStreamsOf(
   );
 }
 
+/** Clients open this as a link, so nothing but a web page gets through. */
+function webUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:' ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function showErrors(ctx: JellyfinRequestContext): boolean {
   return (
     !ctx.userData.hideErrors &&
@@ -222,6 +235,27 @@ export async function resolvePlayback(
   }
   // The memo, not the lock, carries the result, so it is never published.
   return (await resolveByItem(ctx.uuid, scope, itemId)) ?? null;
+}
+
+/**
+ * A version kept by a new run keeps the subtitles a lookup for its file added:
+ * a player still showing it asks for them by their position in that list.
+ */
+function keepEnrichedSubtitles(
+  memo: PlaybackMemo,
+  previous: PlaybackMemo | null | undefined
+): void {
+  const enriched = new Map(
+    (previous?.sources ?? [])
+      .filter((s) => s.subtitlesEnriched)
+      .map((s) => [s.msid, s])
+  );
+  for (const source of memo.sources) {
+    const before = enriched.get(source.msid);
+    if (!before) continue;
+    source.subtitles = before.subtitles;
+    source.subtitlesEnriched = true;
+  }
 }
 
 /** Live by the content when the url says nothing: a channel, or a schedule. */
@@ -278,18 +312,21 @@ async function resolveUncached(
     }
   };
   const top = playable.slice(0, maxVersionsFor(ctx));
+  const identities = sourceIdentities(itemId, top);
 
   const sources: MediaSourceRecord[] = [];
-  for (const raw of top) {
+  for (const [index, raw] of top.entries()) {
     const stream = asLive(raw);
     const formatted = await format(stream);
     sources.push(
       sourceRecordFrom(
         ctx.uuid,
+        identities[index],
         stream,
         formatted,
         labelFrom(formatted, stream),
-        addonSubtitles
+        addonSubtitles,
+        generateBingeGroup(stream, index, ctx.userData)
       )
     );
   }
@@ -300,24 +337,23 @@ async function resolveUncached(
     label: string,
     type: string,
     text: { name: string; description: string },
-    addon = ''
+    extra: { addon?: string; externalUrl?: string } = {}
   ) =>
     sources.push(
       noticeRecordFrom(ctx.uuid, `notice|${itemId}|${sources.length}`, label, {
         ...text,
-        addon,
+        addon: extra.addon ?? '',
+        externalUrl: extra.externalUrl,
         type,
       })
     );
 
   for (const stream of noticeStreamsOf(all, playable)) {
     const formatted = await format(stream);
-    notice(
-      labelFrom(formatted, stream),
-      stream.type,
-      formatted,
-      stream.addon?.name ?? ''
-    );
+    notice(labelFrom(formatted, stream), stream.type, formatted, {
+      addon: stream.addon?.name ?? '',
+      externalUrl: webUrl(stream.externalUrl),
+    });
   }
   if (showErrors(ctx)) {
     for (const error of streamsRes?.errors ?? []) {
@@ -350,7 +386,8 @@ async function resolveUncached(
     runtimeMs: target.runtimeMs,
     createdAt: Date.now(),
   };
-  await writePlaybackMemo(memo, scope);
+  keepEnrichedSubtitles(memo, await resolveByItem(ctx.uuid, scope, itemId));
+  await writePlaybackMemo(memo, scope, ctx.persona?.id);
   if (!playableSources(sources).length) {
     const reason = (streamsRes?.errors ?? [])
       .map((e) => [e.title, e.description].filter(Boolean).join(': '))
@@ -383,9 +420,9 @@ export async function enrichSourceSubtitles(
   memo: PlaybackMemo,
   msid?: string
 ): Promise<void> {
-  const record =
-    (msid ? memo.sources.find((s) => s.msid === msid) : undefined) ??
-    memo.sources[0];
+  const record = msid
+    ? memo.sources.find((s) => s.msid === msid)
+    : memo.sources[0];
   if (!record || record.notice || record.subtitlesEnriched) return;
   const extras = fileExtrasFor(record);
 
@@ -418,7 +455,7 @@ export async function enrichSourceSubtitles(
     { itemId: memo.itemId, msid: record.msid, added },
     'file-matched subtitles merged'
   );
-  await writePlaybackMemo(memo, ctx.scope());
+  await writePlaybackMemo(memo, ctx.scope(), ctx.persona?.id);
 }
 
 export function resolveMarkerId(

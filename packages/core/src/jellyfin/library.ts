@@ -314,7 +314,12 @@ export async function collectionMembers(
   opts: Pick<
     CatalogPageOptions,
     'startIndex' | 'limit' | 'exactTotal' | 'select' | 'cursorKey'
-  >
+  > & {
+    /** A source known to hold none of these is passed over unread. */
+    kinds?: ContentKind[];
+    /** Skips sources not seen holding collections, else read to the end for nothing. */
+    collectionsOnly?: boolean;
+  }
 ): Promise<CatalogPage> {
   const want = opts.startIndex + opts.limit;
   const seen = new Set<string>();
@@ -343,6 +348,16 @@ export async function collectionMembers(
     const sourceKey = `${source.type}|${source.catalogId}|${source.genre ?? ''}`;
     if (!catalog || walked.has(sourceKey)) continue;
     walked.add(sourceKey);
+    if (opts.kinds || opts.collectionsOnly) {
+      const held = await catalogKinds(engine, catalog);
+      if (opts.kinds && held && !held.some((k) => opts.kinds!.includes(k)))
+        continue;
+      if (
+        opts.collectionsOnly &&
+        !(await catalogHasCollections(engine.getUserData(), catalog))
+      )
+        continue;
+    }
     const start = Math.max(0, opts.startIndex - offset);
     const page = await getCatalogPage(engine, catalog, {
       startIndex: start,
@@ -672,6 +687,22 @@ export async function knownCatalogKinds(
   return [
     ...new Set(evidence.types.map((t) => sniffedKind(t, evidence.leaves))),
   ];
+}
+
+/** As {@link knownCatalogKinds}, sniffing the catalog now when nothing is cached. */
+async function catalogKinds(
+  engine: AIOStreams,
+  catalog: Catalog
+): Promise<ContentKind[] | undefined> {
+  const userData = engine.getUserData();
+  if (!(await cachedEvidence(userData, catalog)))
+    await sniffEntryTypes(
+      engine,
+      userData,
+      viewTypeKey(userData, catalog),
+      catalog
+    );
+  return knownCatalogKinds(userData, catalog);
 }
 
 export async function searchCatalogs(

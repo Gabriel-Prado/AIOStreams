@@ -19,6 +19,11 @@ import type {
 
 export const TICKS_PER_MS = 10_000;
 
+/** Clients read ticks as 64-bit integers, so a fraction fails to decode. */
+export function msToTicks(ms: number): number {
+  return Math.round(ms * TICKS_PER_MS);
+}
+
 type Encode = (typeof constants.ENCODES)[number];
 type AudioTag = (typeof constants.AUDIO_TAGS)[number];
 type AudioChannels = (typeof constants.AUDIO_CHANNELS)[number];
@@ -127,7 +132,8 @@ export function containerOf(stream: ParsedStream): string {
 
 export function extensionFor(
   stream: ParsedStream,
-  formatted: { name: string; description: string }
+  formatted: { name: string; description: string },
+  bingeGroup?: string
 ): AiostreamsSourceExtension {
   const pf = stream.parsedFile;
   return {
@@ -152,6 +158,7 @@ export function extensionFor(
     mediaInfoQuality: pf?.mediaInfoQuality,
     filename: stream.filename,
     type: stream.type,
+    bingeGroup,
   };
 }
 
@@ -165,14 +172,51 @@ export function isPlayable(stream: ParsedStream): boolean {
   return !needsHeaders;
 }
 
+function fileKey(stream: ParsedStream): string {
+  const file = stream.filename ?? String(stream.size ?? '');
+  const infoHash = stream.torrent?.infoHash?.toLowerCase();
+  if (infoHash) return `btih:${infoHash}|${stream.torrent?.fileIdx ?? file}`;
+  if (stream.releaseKey)
+    return `release:${stream.releaseKey}|${stream.indexer ?? ''}|${file}`;
+  if (stream.nzbUrl) return `nzb:${stream.nzbUrl}|${file}`;
+  if (stream.ytId) return `yt:${stream.ytId}`;
+  if (stream.externalUrl) return `external:${stream.externalUrl}`;
+  if (stream.filename) return `file:${stream.filename}|${stream.size ?? ''}`;
+  return `url:${stream.url ?? ''}`;
+}
+
+/**
+ * What each version is, whatever its place in the list: its item, addon,
+ * service and file. Versions alike in all of it are numbered in order, as
+ * nothing else tells them apart.
+ */
+export function sourceIdentities(
+  itemId: string,
+  streams: ParsedStream[]
+): string[] {
+  const seen = new Map<string, number>();
+  return streams.map((stream) => {
+    const key = [
+      itemId,
+      stream.addon.instanceId,
+      stream.service?.id ?? '',
+      fileKey(stream),
+    ].join('|');
+    const count = seen.get(key) ?? 0;
+    seen.set(key, count + 1);
+    return count ? `${key}|${count}` : key;
+  });
+}
+
 export function sourceRecordFrom(
   uuid: string,
+  identity: string,
   stream: ParsedStream,
   formatted: { name: string; description: string },
   label: string,
-  addonSubtitles: SubtitleTrack[]
+  addonSubtitles: SubtitleTrack[],
+  bingeGroup?: string
 ): MediaSourceRecord {
-  const identity = stream.id || stream.url || JSON.stringify(stream.releaseKey);
   return {
     msid: mediaSourceId(uuid, identity),
     url: stream.url!,
@@ -187,7 +231,7 @@ export function sourceRecordFrom(
     subtitles: mergeSubtitleTracks(stream, addonSubtitles),
     videoHash: stream.videoHash,
     live: stream.type === 'live',
-    extension: extensionFor(stream, formatted),
+    extension: extensionFor(stream, formatted, bingeGroup),
   };
 }
 
@@ -197,7 +241,7 @@ export function noticeRecordFrom(
   label: string,
   extension: Pick<
     AiostreamsSourceExtension,
-    'name' | 'description' | 'addon' | 'type'
+    'name' | 'description' | 'addon' | 'type' | 'externalUrl'
   >
 ): MediaSourceRecord {
   return {
@@ -284,7 +328,23 @@ function videoStream(
   };
 }
 
-/* One entry per real track when the probe listed them, otherwise per language. */
+const NOT_A_TRACK = new Set([
+  'Unknown',
+  'Dual Audio',
+  'Dubbed',
+  'Multi',
+  'Original',
+]);
+
+/**
+ * Clients pick tracks by position: one unnamed track per confirmed language, as
+ * a deduplicated list is never longer than the file's but its order is unknown.
+ */
+function placeholderLanguages(pf: ParsedFile | undefined, list?: string[]) {
+  if (!pf?.mediaInfoQuality) return [];
+  return (list ?? []).filter((l) => l && !NOT_A_TRACK.has(l));
+}
+
 function audioStreams(
   pf: ParsedFile | undefined,
   startIndex: number
@@ -314,6 +374,17 @@ function audioStreams(
     });
   }
 
+  const placeholders = placeholderLanguages(pf, pf?.languages);
+  if (placeholders.length > 1) {
+    return placeholders.map((_, i) => ({
+      Type: 'Audio',
+      Index: startIndex + i,
+      ...STREAM_FLAGS,
+      DisplayTitle: `Audio ${i + 1}`,
+      IsDefault: i === 0,
+      IsTextSubtitleStream: false,
+    }));
+  }
   const languages = (pf?.languages ?? []).filter((l) => l && l !== 'Unknown');
   const audioTag = (pf?.audioTags ?? []).find((t) => t !== 'Unknown') as
     | AudioTag
@@ -324,39 +395,48 @@ function audioStreams(
     | undefined;
   const channels = channelTag ? CHANNEL_COUNT[channelTag] : undefined;
   const layout = channelTag ? CHANNEL_LAYOUT[channelTag] : undefined;
-  const list = languages.length ? languages : ['Unknown'];
-  return list.map((lang, i) => ({
-    Type: 'Audio',
-    Index: startIndex + i,
-    ...STREAM_FLAGS,
-    Codec: codec,
-    Language: lang === 'Unknown' ? undefined : languageToIso6392(lang),
-    DisplayTitle:
-      [lang !== 'Unknown' ? lang : undefined, audioTag, channelTag]
-        .filter(Boolean)
-        .join(' ') || 'Audio',
-    Channels: channels,
-    ChannelLayout: layout,
-    IsDefault: i === 0,
-    IsTextSubtitleStream: false,
-  }));
+  return [
+    {
+      Type: 'Audio',
+      Index: startIndex,
+      ...STREAM_FLAGS,
+      Codec: codec,
+      Language:
+        languages.length === 1 ? languageToIso6392(languages[0]) : undefined,
+      DisplayTitle:
+        [languages.join(', '), audioTag, channelTag]
+          .filter(Boolean)
+          .join(' ') || 'Audio',
+      Channels: channels,
+      ChannelLayout: layout,
+      IsDefault: true,
+      IsTextSubtitleStream: false,
+    },
+  ];
 }
 
-/*
- * Only a real probe knows the embedded tracks. Clients match an advertised
- * track to the one their player demuxed by language and title, so the language
- * fallback emits no `Title` rather than an invented one that mis-selects.
- */
+const IMAGE_SUBTITLE_CODEC = /pgs|dvd_?sub|dvb_?sub|vobsub|xsub/i;
+
 function embeddedSubtitleStreams(
   pf: ParsedFile | undefined,
   startIndex: number
 ): JellyfinMediaStream[] {
-  if (pf?.mediaInfoQuality !== 'probe') return [];
-  const tracks = pf.subtitleTracks?.length
-    ? pf.subtitleTracks
-    : (pf.subtitles ?? [])
-        .filter((l) => l && l !== 'Unknown')
-        .map((lang) => ({ lang }) as MediaTrack);
+  const tracks =
+    pf?.mediaInfoQuality === 'probe' ? (pf.subtitleTracks ?? []) : [];
+  if (!tracks.length) {
+    const languages = placeholderLanguages(pf, pf?.subtitles);
+    const only = languages.length === 1 ? languages[0] : undefined;
+    return languages.map((_, i) => ({
+      Type: 'Subtitle',
+      Index: startIndex + i,
+      ...STREAM_FLAGS,
+      Language: only ? languageToIso6392(only) : undefined,
+      DisplayTitle: only ?? `Subtitle ${i + 1}`,
+      IsDefault: false,
+      IsTextSubtitleStream: true,
+      DeliveryMethod: 'Embed',
+    }));
+  }
   return tracks.map((track, i) => ({
     Type: 'Subtitle',
     Index: startIndex + i,
@@ -371,7 +451,7 @@ function embeddedSubtitleStreams(
     IsDefault: track.default ?? false,
     IsForced: track.forced ?? false,
     IsHearingImpaired: track.hearingImpaired ?? false,
-    IsTextSubtitleStream: true,
+    IsTextSubtitleStream: !IMAGE_SUBTITLE_CODEC.test(track.codec ?? ''),
     DeliveryMethod: 'Embed',
   }));
 }
@@ -399,6 +479,10 @@ export interface MediaSourceBuildOptions {
   subtitleFormat: (sourceExtension: string) => SubtitleFormat;
   /** Server-relative delivery URL for the subtitle stream at `index`. */
   subtitleUrl: (index: number, format: SubtitleFormat) => string;
+  /** The client's own token, as players fetch subtitles without its headers. */
+  subtitleToken?: string;
+  /** `File` sends the client through the server's stream route, not `Path`. */
+  protocol?: 'Http' | 'File';
   runtimeMs?: number;
   includeExtension: boolean;
   hasSegments?: boolean;
@@ -420,7 +504,10 @@ export function externalSubtitleStartIndex(record: MediaSourceRecord): number {
 
 export function buildMediaStreams(
   record: MediaSourceRecord,
-  opts: Pick<MediaSourceBuildOptions, 'subtitleFormat' | 'subtitleUrl'>
+  opts: Pick<
+    MediaSourceBuildOptions,
+    'subtitleFormat' | 'subtitleUrl' | 'subtitleToken'
+  >
 ): JellyfinMediaStream[] {
   const streams: JellyfinMediaStream[] = [
     videoStream(record.parsedFile, record.bitrate),
@@ -448,8 +535,11 @@ export function buildMediaStreams(
       IsHearingImpaired: sub.hearingImpaired ?? false,
       IsTextSubtitleStream: true,
       DeliveryMethod: 'External',
-      DeliveryUrl: url,
+      DeliveryUrl: opts.subtitleToken
+        ? `${url}?ApiKey=${encodeURIComponent(opts.subtitleToken)}`
+        : url,
       IsExternalUrl: false,
+      // No token here: clients read the format off its end.
       Path: url,
     });
   });
@@ -497,7 +587,7 @@ export function buildMediaSource(
     ? undefined
     : record.durationMs || opts.runtimeMs;
   const source: JellyfinMediaSource = {
-    Protocol: 'Http',
+    Protocol: opts.protocol ?? 'Http',
     Id: opts.id,
     Path: record.url,
     Type: 'Default',
@@ -506,7 +596,7 @@ export function buildMediaSource(
     Name: record.label,
     IsRemote: true,
     ETag: record.msid,
-    RunTimeTicks: durationMs ? durationMs * TICKS_PER_MS : undefined,
+    RunTimeTicks: durationMs ? msToTicks(durationMs) : undefined,
     IsInfiniteStream: record.live,
     ...SOURCE_FLAGS,
     HasSegments: opts.hasSegments ?? false,
@@ -514,7 +604,8 @@ export function buildMediaSource(
     Bitrate: record.bitrate,
     DefaultAudioStreamIndex: audioIndex >= 0 ? audioIndex : undefined,
   };
-  if (opts.includeExtension) source.aiostreams = record.extension;
+  if (opts.includeExtension)
+    source.aiostreams = { ...record.extension, id: record.msid };
   return source;
 }
 

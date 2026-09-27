@@ -342,8 +342,9 @@ function seasonsFrom(
 
   // `app_extras` posters: keyed by number, or a list in season order.
   const posters = new Map<number, string>();
-  if (isObject(extras.seasonPosterByNumber)) {
-    for (const [k, v] of Object.entries(extras.seasonPosterByNumber)) {
+  for (const keyed of [extras.seasonPosterByNumber, extras.seasonPosters]) {
+    if (!isObject(keyed)) continue;
+    for (const [k, v] of Object.entries(keyed)) {
       const url = str(v);
       const season = num(k);
       if (url && season !== undefined) posters.set(season, url);
@@ -383,7 +384,7 @@ function trailersFrom(meta: AnyMeta): { Name: string; Url: string }[] {
       add(str(t.title) ?? 'Trailer', `https://www.youtube.com/watch?v=${yt}`);
   }
   for (const t of meta.trailers ?? []) {
-    const source = str(t.source);
+    const source = str(t.source) ?? str((t as AnyObject).ytId);
     if (!source) continue;
     add(
       str((t as AnyObject).name) ?? str(t.type) ?? 'Trailer',

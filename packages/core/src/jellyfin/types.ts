@@ -52,7 +52,12 @@ export interface AiostreamsSourceExtension {
   indexer?: string;
   mediaInfoQuality?: string;
   filename?: string;
+  externalUrl?: string;
   type: string;
+  /** Stremio's: the next episode's version with the same group plays on. */
+  bingeGroup?: string;
+  /** The version's own id, as the first version's `Id` is the item's. Set when sent. */
+  id?: string;
 }
 
 export interface MediaSourceRecord {
@@ -94,6 +99,7 @@ export interface MemoPointer {
   uuid: string;
   encryptedPassword: string;
   itemId: string;
+  persona?: string;
 }
 
 export type ImageKind = 'Primary' | 'Backdrop' | 'Logo' | 'Thumb';
@@ -103,6 +109,8 @@ export interface UserItemDataDto {
   PlaybackPositionTicks: number;
   PlayCount: number;
   IsFavorite: boolean;
+  /** False for a dropped show; a like is not kept. */
+  Likes?: boolean;
   Played: boolean;
   LastPlayedDate?: string;
   PlayedPercentage?: number;

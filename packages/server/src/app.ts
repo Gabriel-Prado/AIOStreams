@@ -52,6 +52,7 @@ import {
   eztv,
   therarbg,
   thePirateBay,
+  tsukihime,
   torrentGalaxy,
   seadex,
   easynews,
@@ -97,6 +98,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const frontendRoot = path.join(__dirname, '../../frontend/dist');
+export const jellyfinWebRoot = path.join(__dirname, '../../jellyfin-web/dist');
 export const staticRoot = path.join(__dirname, './static');
 
 app.use(ipMiddleware);
@@ -227,6 +229,7 @@ builtinsRouter.use('/knaben', knaben);
 builtinsRouter.use('/eztv', eztv);
 builtinsRouter.use('/therarbg', therarbg);
 builtinsRouter.use('/the-pirate-bay', thePirateBay);
+builtinsRouter.use('/tsukihime', tsukihime);
 builtinsRouter.use('/torrent-galaxy', torrentGalaxy);
 builtinsRouter.use('/seadex', seadex);
 builtinsRouter.use('/easynews', easynews);
@@ -237,15 +240,9 @@ app.use('/blocklist', publicBlocklistRouter);
 app.use('/community', publicCommunityRouter);
 app.use('/webdav', webdavRouter);
 
-// A Jellyfin client stores the address it is given and builds its own URLs
-// from it, so a variant has to travel in the path rather than a query string.
 const jellyfinRouter = createJellyfinRouter();
-app.use(
-  `/jellyfin/:uuid/:encryptedPassword${VARIANT_PATH_ROUTE}`,
-  jellyfinRouter
-);
+app.use('/jellyfin/u/:alias', jellyfinRouter);
 app.use('/jellyfin/:uuid/:encryptedPassword', jellyfinRouter);
-app.use(`/jellyfin${VARIANT_PATH_ROUTE}`, jellyfinRouter);
 app.use('/jellyfin', jellyfinRouter);
 
 // Content-hashed build assets. These filenames change on every content
@@ -255,6 +252,13 @@ app.use('/jellyfin', jellyfinRouter);
 app.use(
   '/assets',
   express.static(path.join(frontendRoot, 'assets'), {
+    immutable: true,
+    maxAge: '1y',
+  })
+);
+app.use(
+  '/jellyfin-web/static',
+  express.static(path.join(jellyfinWebRoot, 'static'), {
     immutable: true,
     maxAge: '1y',
   })

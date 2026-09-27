@@ -111,6 +111,23 @@ const Formatter = z.object({
 const CONFIG_UUID_SHAPE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export const PERSONA_PIN_PATTERN = /^\d{4,12}$/;
+const BCRYPT_HASH_PATTERN = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+/** A plain PIN as entered, or the bcrypt hash it was saved as. */
+const PERSONA_LOCK_PATTERN = new RegExp(
+  `${PERSONA_PIN_PATTERN.source}|${BCRYPT_HASH_PATTERN.source}`
+);
+
+export function isPersonaLockHash(value: string): boolean {
+  return BCRYPT_HASH_PATTERN.test(value);
+}
+
+/** A PIN's bcrypt hash; a plain PIN sent here is hashed when the config is saved. */
+const UserLockSchema = z
+  .string()
+  .regex(PERSONA_LOCK_PATTERN, 'A PIN must be 4 to 12 digits.')
+  .optional();
+
 /** A user a Jellyfin client can sign in as. Shares the configuration's credential. */
 const JellyfinPersonaSchema = z.object({
   // Names the DB partition, so a rename must not touch it.
@@ -130,6 +147,7 @@ const JellyfinPersonaSchema = z.object({
   trackers: z.array(z.string().min(1)).max(50).optional(),
   /** Kept out of the picker; still usable by name. */
   hidden: z.boolean().optional(),
+  lock: UserLockSchema,
 });
 
 export type JellyfinPersona = z.infer<typeof JellyfinPersonaSchema>;
@@ -165,6 +183,7 @@ const JellyfinSettingsFields = z.object({
         .optional(),
       /** Preset ids of the trackers it syncs with; absent means all. */
       trackers: z.array(z.string().min(1)).max(50).optional(),
+      lock: UserLockSchema,
     })
     .optional(),
   personas: z
@@ -1171,6 +1190,11 @@ export const UserDataSchema = z.object({
     })
     .optional(),
   jellyfin: JellyfinSettings.optional(),
+  remuxDb: z
+    .object({
+      enabled: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 export type UserData = z.infer<typeof UserDataSchema>;
@@ -1549,8 +1573,8 @@ export type ParsedStreams = z.infer<typeof ParsedStreams>;
 
 const TrailerSchema = z
   .object({
-    source: z.string().min(1),
-    type: z.string(),
+    source: z.string().optional(),
+    type: z.string().optional(),
   })
   .passthrough();
 
@@ -1887,6 +1911,8 @@ const StatusResponseSchema = z.object({
         maxLibraries: z.number(),
         /** Extra users a configuration may add beyond its primary user. */
         maxPersonas: z.number(),
+        /** Whether a user's PIN alone signs it in on a picker address. */
+        pinSignIn: z.boolean().optional(),
         /** Trackers one user syncs with at most. */
         maxTrackers: z.number(),
         segments: z.object({
@@ -1950,6 +1976,7 @@ const StatusResponseSchema = z.object({
       tmdb: z.object({ accessToken: z.boolean(), apiKey: z.boolean() }),
       tvdb: z.object({ apiKey: z.boolean() }),
     }),
+    remuxdb: z.object({ enabled: z.boolean() }),
     /** Global analytics master switch (false = no events written anywhere). */
     analyticsEnabled: z.boolean(),
     /** Per-user analytics (configure-page Stats tab) enabled state. */

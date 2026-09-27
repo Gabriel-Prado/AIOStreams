@@ -1,0 +1,307 @@
+import React from 'react';
+import { BiCheck, BiPlay } from 'react-icons/bi';
+import { cn } from '@aiostreams/ui/core/styling';
+import { useHold } from '../lib/use-hold';
+import { usePosterLines } from '../lib/settings';
+
+/** A list is tried in order, moving on when an image fails to load. */
+export function Artwork({
+  src,
+  alt,
+  className,
+  own,
+  standIn,
+}: {
+  src: string | string[] | null;
+  alt: string;
+  className?: string;
+  /** How many leading sources are the item's own, `standIn` covering the rest. */
+  own?: number;
+  standIn?: React.ReactNode;
+}) {
+  const sources = Array.isArray(src) ? src : src ? [src] : [];
+  const key = sources.join('|');
+  const [attempt, setAttempt] = React.useState(0);
+  const [loaded, setLoaded] = React.useState(false);
+  React.useEffect(() => {
+    setAttempt(0);
+    setLoaded(false);
+  }, [key]);
+  const current = sources[attempt];
+  const borrowed = attempt >= (own ?? sources.length) ? standIn : null;
+  if (!current) {
+    if (borrowed) return borrowed;
+    return (
+      <div
+        data-ui="artwork-fallback"
+        className={cn(
+          'absolute inset-0 flex items-end bg-gray-900 p-3 text-sm text-[--muted]',
+          className
+        )}
+      >
+        <span className="line-clamp-3">{alt}</span>
+      </div>
+    );
+  }
+  return (
+    <>
+      <img
+        data-ui="artwork"
+        src={current}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onLoad={() => setLoaded(true)}
+        onError={() => setAttempt((n) => n + 1)}
+        className={cn(
+          'absolute inset-0 h-full w-full object-cover transition-[transform,opacity] duration-500',
+          loaded ? 'opacity-100' : 'opacity-0',
+          className
+        )}
+      />
+      {borrowed}
+    </>
+  );
+}
+
+export function ProgressBar({ percent }: { percent: number }) {
+  return (
+    <div
+      data-ui="progress-bar"
+      className="absolute inset-x-0 bottom-0 h-1 bg-black/60"
+    >
+      <div
+        data-ui="progress-bar-fill"
+        className="h-full bg-brand-500"
+        style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
+      />
+    </div>
+  );
+}
+
+function WatchedMark() {
+  return (
+    <span
+      data-ui="watched-badge"
+      className="absolute right-2 top-2 z-[2] flex size-6 items-center justify-center rounded-full bg-brand-500 text-white shadow"
+    >
+      <BiCheck className="text-lg" />
+    </span>
+  );
+}
+
+export type CardShape = 'poster' | 'landscape' | 'square';
+
+const SHAPE_CLASS: Record<CardShape, string> = {
+  poster: 'aspect-[2/3]',
+  landscape: 'aspect-video',
+  square: 'aspect-square',
+};
+
+export interface PosterCardProps {
+  href: string;
+  shape?: CardShape;
+  image: string | string[] | null;
+  title: string;
+  subtitle?: string;
+  watched?: boolean;
+  /** Episodes left to watch, for a show. */
+  unwatched?: number;
+  progress?: number | null;
+  className?: string;
+}
+
+export function PosterCard(props: PosterCardProps) {
+  const { href, image, title, subtitle, watched, unwatched, progress } = props;
+  const shape = props.shape ?? 'poster';
+  const [lines] = usePosterLines();
+  const showTitle = lines.includes('title');
+  const showSubtitle = !!subtitle && lines.includes('year');
+  return (
+    <a
+      data-ui="poster-card"
+      data-shape={shape}
+      href={href}
+      title={showTitle ? undefined : title}
+      className={cn('group/poster block space-y-2', props.className)}
+    >
+      <div
+        data-ui="poster-card-image"
+        className={cn(
+          'relative w-full overflow-hidden rounded-lg bg-gray-900 ring-1 ring-white/5',
+          SHAPE_CLASS[shape]
+        )}
+      >
+        <Artwork
+          src={image}
+          alt={title}
+          className="group-hover/poster:scale-[1.04]"
+        />
+        <div className="absolute inset-0 bg-black/0 transition-colors group-hover/poster:bg-black/20" />
+        {watched && <WatchedMark />}
+        {!watched && !!unwatched && (
+          <span
+            data-ui="unwatched-count"
+            className="absolute right-2 top-2 z-[2] rounded-full bg-brand-500 px-2 py-0.5 text-xs font-semibold text-white shadow"
+          >
+            {unwatched}
+          </span>
+        )}
+        {progress != null && progress > 0 && <ProgressBar percent={progress} />}
+      </div>
+      {(showTitle || showSubtitle) && (
+        <div data-ui="poster-card-text" className="min-w-0 px-0.5">
+          {showTitle && (
+            <p
+              data-ui="poster-card-title"
+              className="truncate text-sm font-medium"
+              title={title}
+            >
+              {title}
+            </p>
+          )}
+          {showSubtitle && (
+            <p
+              data-ui="poster-card-subtitle"
+              className="truncate text-xs text-[--muted]"
+            >
+              {subtitle}
+            </p>
+          )}
+        </div>
+      )}
+    </a>
+  );
+}
+
+export interface WideCardProps {
+  href?: string;
+  onClick?: () => void;
+  /** A mouse press held down; touch keeps its long press for the item menu. */
+  onHold?: () => void;
+  image: string | string[] | null;
+  title: string;
+  subtitle?: string;
+  meta?: React.ReactNode;
+  watched?: boolean;
+  progress?: number | null;
+  /** Rings the card, for the item a page was opened on. */
+  highlighted?: boolean;
+  /** No play hint, for what cannot play yet. */
+  unavailable?: boolean;
+  /** Greyed out, to set it apart from playable neighbours. */
+  dimmed?: boolean;
+  /** Shown over the image's top left corner. */
+  badge?: React.ReactNode;
+  className?: string;
+}
+
+/** A landscape card for an episode, a resume point or a live playback. */
+export function WideCard(props: WideCardProps) {
+  const {
+    href,
+    onClick,
+    onHold,
+    image,
+    title,
+    subtitle,
+    meta,
+    watched,
+    progress,
+    highlighted,
+    unavailable,
+    dimmed,
+    badge,
+  } = props;
+  const hold = useHold(onHold, { touch: false });
+  const body = (
+    <>
+      <div
+        data-ui="wide-card-image"
+        className={cn(
+          'relative aspect-video w-full overflow-hidden rounded-xl bg-gray-900 ring-1 ring-white/5',
+          highlighted && 'ring-2 ring-brand-400'
+        )}
+      >
+        <Artwork
+          src={image}
+          alt={title}
+          className={cn(
+            'group-hover/wide:scale-[1.03]',
+            dimmed && 'opacity-40 grayscale'
+          )}
+        />
+        {!unavailable && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover/wide:bg-black/30">
+            <BiPlay className="text-5xl text-white opacity-0 drop-shadow transition-opacity group-hover/wide:opacity-90" />
+          </div>
+        )}
+        {badge && (
+          <div
+            data-ui="wide-card-badge"
+            className="absolute left-2 top-2 z-[2]"
+          >
+            {badge}
+          </div>
+        )}
+        {watched && <WatchedMark />}
+        {progress != null && progress > 0 && <ProgressBar percent={progress} />}
+      </div>
+      <div
+        data-ui="wide-card-text"
+        className="flex min-w-0 items-start justify-between gap-2 px-0.5"
+      >
+        <div className="min-w-0">
+          <p
+            data-ui="wide-card-title"
+            className="truncate font-semibold"
+            title={title}
+          >
+            {title}
+          </p>
+          {subtitle && (
+            <p
+              data-ui="wide-card-subtitle"
+              className="truncate text-sm text-[--muted]"
+              title={subtitle}
+            >
+              {subtitle}
+            </p>
+          )}
+        </div>
+        {meta && (
+          <div
+            data-ui="wide-card-meta"
+            className="flex-none pt-0.5 text-xs text-[--muted]"
+          >
+            {meta}
+          </div>
+        )}
+      </div>
+    </>
+  );
+  return (
+    <div
+      data-ui="wide-card"
+      className={cn('group/wide relative space-y-2', props.className)}
+    >
+      {href ? (
+        <a href={href} className="block space-y-2">
+          {body}
+        </a>
+      ) : onClick ? (
+        <button
+          type="button"
+          onClick={onClick}
+          {...hold}
+          className="block w-full space-y-2 text-left"
+        >
+          {body}
+        </button>
+      ) : (
+        <div className="space-y-2">{body}</div>
+      )}
+    </div>
+  );
+}
