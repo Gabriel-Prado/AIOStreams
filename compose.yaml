@@ -1,11 +1,22 @@
 services:
-  aiostreams:
+  aiostreams-stable:
     image: ghcr.io/gabriel-prado/aiostreams:latest
-    container_name: aiostreams
+    container_name: aiostreams-stable
     restart: unless-stopped
     ports:
       - 3000:3000
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./data-stable:/app/data
+
+  aiostreams-development:
+    image: ghcr.io/gabriel-prado/aiostreams:development
+    container_name: aiostreams-development
+    restart: unless-stopped
+    ports:
+      - 3001:3000
+    env_file:
+      - .env
+    volumes:
+      - ./data-development:/app/data
