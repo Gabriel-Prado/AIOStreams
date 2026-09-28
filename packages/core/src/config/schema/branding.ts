@@ -9,7 +9,7 @@ const nullableString = z.string().nullable();
 export const brandingSchema = {
   addonName: {
     schema: z.string(),
-    default: 'AIOStreams',
+    default: 'AIOStreams | SnakeGabriel',
     label: 'Addon name',
     description: 'Display name shown in the manifest and UI.',
     env: 'ADDON_NAME',

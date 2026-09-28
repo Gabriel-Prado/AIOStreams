@@ -78,7 +78,7 @@ function Content() {
   const version = status?.tag || 'Unknown';
   const channel: ReleaseChannel =
     status?.channel ?? (version.startsWith('v') ? 'stable' : 'nightly');
-  const githubUrl = 'https://github.com/Viren070/AIOStreams';
+  const githubUrl = 'https://github.com/Gabriel-Prado/AIOStreams';
   const discordUrl = 'https://discord.viren070.me';
   const customHtml = status?.settings?.customHtml;
 
