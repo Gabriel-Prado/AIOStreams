@@ -41,6 +41,7 @@ export interface ItemBuildContext {
   uuid: string;
   /** Whether list rows advertise placeholder versions, see `listPlaceholderSources`. */
   listVersions: boolean;
+  markUnaired: boolean;
 }
 
 type AnyMeta = (MetaPreview | Meta) & Record<string, unknown>;
@@ -77,6 +78,34 @@ export function descriptorOf(
     ?.descriptor;
 }
 
+/** Set even when the episode is not sent as `Virtual`. */
+export function isUnairedEpisode(item: JellyfinItem): boolean {
+  return !!(item as { _aio?: { unaired?: boolean } })._aio?.unaired;
+}
+
+export function isUnairedVideo(video: SeasonGroup['videos'][number]): boolean {
+  const premiere = toIso(video.released);
+  return (
+    (video as { available?: unknown }).available === false ||
+    (premiere ? new Date(premiere).getTime() > Date.now() : false)
+  );
+}
+
+/**
+ * A video timed by a tracker. It airs at the later of the two times, so neither
+ * a fallback time in the meta nor a stale tracker airs it early, and the time
+ * then decides whether it has aired.
+ */
+export function withTrackerAirTime<V extends SeasonGroup['videos'][number]>(
+  video: V,
+  trackerAt: number
+): V {
+  const own = video.released ? Date.parse(video.released) : NaN;
+  const at = Number.isFinite(own) ? Math.max(own, trackerAt) : trackerAt;
+  const { available: _, ...rest } = video as V & { available?: unknown };
+  return { ...rest, released: new Date(at).toISOString() } as V;
+}
+
 export function defaultUserData(itemId: string): UserItemDataDto {
   return {
     PlaybackPositionTicks: 0,
@@ -111,6 +140,20 @@ export function withPlayedCounts(
   };
 }
 
+/** Jellyfin reads a rating from 6.5 up as a like. */
+const MIN_LIKE_RATING = 6.5;
+
+export function ratingUserData(
+  row: Pick<WatchStateRow, 'dropped' | 'likes' | 'rating'>
+): Pick<UserItemDataDto, 'Likes' | 'Rating'> {
+  const out: Pick<UserItemDataDto, 'Likes' | 'Rating'> = {};
+  if (row.rating != null) out.Rating = row.rating;
+  if (row.dropped) out.Likes = false;
+  else if (row.likes != null) out.Likes = row.likes;
+  else if (row.rating != null) out.Likes = row.rating >= MIN_LIKE_RATING;
+  return out;
+}
+
 export function userDataFromRow(
   itemId: string,
   row: WatchStateRow | undefined,
@@ -126,7 +169,7 @@ export function userDataFromRow(
     Key: itemId,
     ItemId: itemId,
   };
-  if (row.dropped) ud.Likes = false;
+  Object.assign(ud, ratingUserData(row));
   if (row.lastPlayedAt)
     ud.LastPlayedDate = new Date(row.lastPlayedAt).toISOString();
   if (!row.played && duration > 0 && row.positionMs > 0) {
@@ -163,7 +206,7 @@ export function providerIdsFor(
 
 function externalUrls(
   providerIds: Record<string, string>,
-  kind: 'movie' | 'series' | 'episode'
+  kind: 'movie' | 'series' | 'season' | 'episode'
 ) {
   const urls: { Name: string; Url: string }[] = [];
   if (providerIds.Imdb)
@@ -171,8 +214,8 @@ function externalUrls(
       Name: 'IMDb',
       Url: `https://www.imdb.com/title/${providerIds.Imdb}`,
     });
-  // TMDB, TVDB and Trakt ids name a movie or a show; an episode's do not.
-  if (kind !== 'episode') {
+  // TMDB, TVDB and Trakt ids name a movie or a show, not its parts.
+  if (kind === 'movie' || kind === 'series') {
     const show = kind === 'series';
     if (providerIds.Tmdb)
       urls.push({
@@ -279,6 +322,10 @@ function baseItem(
   };
 }
 
+export function requiresGenre(c: Catalog): boolean {
+  return !!c.extra?.some((e) => e.name === 'genre' && e.isRequired);
+}
+
 export function buildView(
   ctx: ItemBuildContext,
   catalog: Catalog,
@@ -298,6 +345,7 @@ export function buildView(
     ChildCount: 0,
     Path: `/aiostreams/${catalog.type}/${catalog.id}`,
     PrimaryImageAspectRatio: 1.7777,
+    ...(requiresGenre(catalog) && { aiostreams: { genreRequired: true } }),
     _aio: { descriptor: { k: 'view', t: catalog.type, c: catalog.id } },
   };
 }
@@ -593,7 +641,8 @@ export function buildSeason(
   seriesItem: JellyfinItem,
   group: SeasonGroup,
   playstates?: Map<string, WatchStateRow>,
-  episodeKeyOf?: (video: SeasonGroup['videos'][number]) => string
+  episodeKeyOf?: (video: SeasonGroup['videos'][number]) => string,
+  own: { row?: WatchStateRow; providerIds?: Record<string, string> } = {}
 ): JellyfinItem {
   const id = encodeItemId({
     k: 'season',
@@ -639,7 +688,16 @@ export function buildSeason(
     ParentLogoImageTag: seriesTags?.Logo,
     PrimaryImageAspectRatio: 0.6666,
     ProductionYear: seriesItem.ProductionYear,
-    UserData: withPlayedCounts(defaultUserData(id), played, counted),
+    UserData: {
+      ...withPlayedCounts(defaultUserData(id), played, counted),
+      ...(own.row ? ratingUserData(own.row) : {}),
+    },
+    ...(own.providerIds
+      ? {
+          ProviderIds: own.providerIds,
+          ExternalUrls: externalUrls(own.providerIds, 'season'),
+        }
+      : {}),
     Path: `/aiostreams/${meta.type}/${meta.id}/${group.name}`,
     _aio: {
       descriptor: { k: 'season', t: meta.type, i: meta.id, s: group.season },
@@ -663,7 +721,6 @@ export function buildEpisode(
     i: meta.id,
     s: group.season,
   });
-  const v = video as typeof video & Record<string, unknown>;
   const images: ItemImages = {};
   if (typeof video.thumbnail === 'string') images.Primary = video.thumbnail;
   if (typeof meta.background === 'string') images.Backdrop = meta.background;
@@ -672,9 +729,8 @@ export function buildEpisode(
   const extra = readVideoEnrichment(video);
   const runtimeMs = extra.runtimeMs ?? parseRuntimeMs(meta.runtime);
   const premiere = toIso(video.released);
-  const unaired =
-    v.available === false ||
-    (premiere ? new Date(premiere).getTime() > Date.now() : false);
+  const unaired = isUnairedVideo(video);
+  const missing = unaired && ctx.markUnaired;
   const title = video.title ?? video.name ?? `Episode ${video.episode}`;
   const path = `/aiostreams/${meta.type}/${meta.id}/${group.name}/${title}${PLAYABLE_EXT}`;
   const seriesTags = seriesItem.ImageTags as Record<string, string>;
@@ -683,8 +739,8 @@ export function buildEpisode(
     SortName: `${String(group.season).padStart(4, '0')}-${String(video.episode ?? 0).padStart(4, '0')}`,
     MediaType: 'Video',
     VideoType: 'VideoFile',
-    LocationType: unaired ? 'Virtual' : 'FileSystem',
-    CanDownload: !unaired,
+    LocationType: missing ? 'Virtual' : 'FileSystem',
+    CanDownload: !missing,
     IndexNumber: video.episode,
     ParentIndexNumber: group.season,
     SeriesId: seriesItem.Id,
@@ -717,7 +773,7 @@ export function buildEpisode(
     ExternalUrls: externalUrls(extra.providerIds, 'episode'),
     UserData: userDataFromRow(id, playstate, runtimeMs),
     Path: path,
-    ...(unaired || !ctx.listVersions
+    ...(missing || !ctx.listVersions
       ? {}
       : {
           EnableMediaSourceDisplay: true,
@@ -728,7 +784,7 @@ export function buildEpisode(
             path
           ),
         }),
-    _aio: { descriptor },
+    _aio: { descriptor, ...(unaired ? { unaired: true } : {}) },
   };
 }
 

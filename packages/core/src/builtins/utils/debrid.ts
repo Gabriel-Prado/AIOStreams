@@ -21,6 +21,7 @@ import {
   isCountryWrong,
   DebridDownload,
   isNotVideoFile,
+  hasTooManySelectableFiles,
   isTorrentDebridService,
   isUsenetDebridService,
   TitleMetadata,
@@ -33,6 +34,7 @@ import {
   preprocessTitle,
   normaliseTitle,
   extractInfoHashFromMagnet,
+  base32ToHex,
 } from '../../parser/utils.js';
 export { extractInfoHashFromMagnet };
 
@@ -43,9 +45,10 @@ type Metadata = TitleMetadata;
 export function validateInfoHash(
   infoHash: string | undefined
 ): string | undefined {
-  return infoHash && /^[a-f0-9]{40}$/i.test(infoHash)
-    ? infoHash.toLowerCase()
-    : undefined;
+  if (!infoHash) return undefined;
+  if (/^[a-f0-9]{40}$/i.test(infoHash)) return infoHash.toLowerCase();
+  if (/^[a-z2-7]{32}$/i.test(infoHash)) return base32ToHex(infoHash);
+  return undefined;
 }
 
 export function extractTrackersFromMagnet(magnet: string): string[] {
@@ -374,6 +377,15 @@ async function processTorrentsForDebridService(
       }
     }
 
+    if (hasTooManySelectableFiles(magnetCheckResult?.files)) {
+      logger.debug(`Skipping torrent with too many files to select from`, {
+        service: service.id,
+        torrent: torrent.title,
+        files: magnetCheckResult?.files?.length,
+      });
+      continue;
+    }
+
     validTorrents.push({
       torrent,
       magnetCheckResult,
@@ -500,6 +512,13 @@ export async function processTorrentsForP2P(
       if (isEpisodeWrong(parsedTorrent, metadata)) {
         continue;
       }
+    }
+    if (hasTooManySelectableFiles(torrent.files)) {
+      logger.debug(`Skipping torrent with too many files to select from`, {
+        torrent: torrent.title,
+        files: torrent.files?.length,
+      });
+      continue;
     }
     validTorrents.push({ torrent, parsedTitle: parsedTorrent! });
   }
@@ -723,6 +742,15 @@ async function processNZBsForDebridService(
       if (reason) {
         continue;
       }
+    }
+
+    if (hasTooManySelectableFiles(nzbCheckResult?.files)) {
+      logger.debug(`Skipping NZB with too many files to select from`, {
+        service: service.id,
+        nzb: nzb.title,
+        files: nzbCheckResult?.files?.length,
+      });
+      continue;
     }
 
     validNZBs.push({ nzb, nzbCheckResult, parsedTitle: parsedNzb! });

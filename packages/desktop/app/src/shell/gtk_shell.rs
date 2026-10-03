@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use aiostreams_desktop_core::bridge::{Inbound, Outbound, origin};
+use aiostreams_desktop_core::discord;
 use aiostreams_desktop_core::player::Player;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
@@ -11,6 +12,9 @@ use webkit6::{
     UserScriptInjectionTime,
 };
 
+use crate::links::Inbox;
+use crate::media;
+use crate::placement::{self, MIN_SIZE, Placement, SETTLE};
 use crate::updates::Updater;
 use crate::{
     App, Edge, Served, UserEvent, allowed_navigation, handle, platform, receive_script, serve,
@@ -44,6 +48,7 @@ struct Shell {
     video: platform::VideoSurface,
     player: Rc<RefCell<Option<Player>>>,
     press: RefCell<Option<Press>>,
+    links: RefCell<Inbox>,
     main_loop: glib::MainLoop,
 }
 
@@ -151,6 +156,19 @@ impl Shell {
                 maximized: self.window.is_maximized(),
             }),
             UserEvent::WindowButtons(_) => {}
+            UserEvent::Link(link) => {
+                self.window.present();
+                let now = self.links.borrow_mut().receive(link);
+                if let Some(link) = now {
+                    self.emit(Outbound::Link { url: link });
+                }
+            }
+            UserEvent::LinksReady => {
+                let ready = self.links.borrow_mut().ready();
+                for link in ready {
+                    self.emit(Outbound::Link { url: link });
+                }
+            }
         }
     }
 
@@ -159,6 +177,18 @@ impl Shell {
         self.video.shutdown();
         self.player.borrow_mut().take();
         self.main_loop.quit();
+    }
+}
+
+/// GTK keeps the size the window has when not maximized as its default size.
+/// Wayland leaves where it goes to the desktop.
+fn placement_of(window: &gtk4::Window) -> Placement {
+    let (width, height) = window.default_size();
+    Placement {
+        width: width.max(MIN_SIZE.0 as i32) as u32,
+        height: height.max(MIN_SIZE.1 as i32) as u32,
+        position: None,
+        maximized: window.is_maximized(),
     }
 }
 
@@ -179,12 +209,14 @@ pub fn run(app: App) {
     // libmpv refuses to start unless LC_NUMERIC is C, which GTK's init replaced.
     // SAFETY: on the main thread, before any other thread starts.
     unsafe { libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr()) };
+    let saved = placement::load(&data_dir);
     let window = gtk4::Window::builder()
         .title("AIOStreams")
-        .default_width(1280)
-        .default_height(760)
+        .default_width(saved.width as i32)
+        .default_height(saved.height as i32)
+        .maximized(saved.maximized)
         .build();
-    window.set_size_request(480, 320);
+    window.set_size_request(MIN_SIZE.0 as i32, MIN_SIZE.1 as i32);
     // A hidden title bar keeps GTK's frame: corners, shadow and resize borders.
     let titlebar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     titlebar.set_visible(false);
@@ -208,6 +240,8 @@ pub fn run(app: App) {
     let updater = Rc::new(Updater::start(|message| {
         post(UserEvent::Emit(receive_script(&message)))
     }));
+    discord::start(|message| post(UserEvent::Emit(receive_script(&message))));
+    media::start(|key| post(UserEvent::Emit(receive_script(&Outbound::MediaKey { key }))));
 
     let context = webkit6::WebContext::new();
     context.register_uri_scheme("aiostreams", move |request| {
@@ -283,8 +317,13 @@ pub fn run(app: App) {
     webview.connect_load_changed({
         let player = player.clone();
         move |_, event| {
-            if let (LoadEvent::Started, Some(p)) = (event, player.borrow().as_ref()) {
-                p.stop();
+            if let LoadEvent::Started = event {
+                if let Some(shell) = shell() {
+                    shell.links.borrow_mut().page_loading();
+                }
+                if let Some(p) = player.borrow().as_ref() {
+                    p.stop();
+                }
             }
         }
     });
@@ -334,11 +373,35 @@ pub fn run(app: App) {
             shell.webview.grab_focus();
         }
     });
-    window.connect_close_request(|_| {
-        if let Some(shell) = shell() {
-            shell.close();
+    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let save_later = {
+        let data_dir = data_dir.clone();
+        move |window: &gtk4::Window| {
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (window, data_dir, done) = (window.downgrade(), data_dir.clone(), pending.clone());
+            let id = glib::timeout_add_local_once(SETTLE, move || {
+                done.borrow_mut().take();
+                if let Some(window) = window.upgrade() {
+                    placement::save(&data_dir, &placement_of(&window));
+                }
+            });
+            *pending.borrow_mut() = Some(id);
         }
-        glib::Propagation::Proceed
+    };
+    window.connect_default_width_notify(save_later.clone());
+    window.connect_default_height_notify(save_later.clone());
+    window.connect_maximized_notify(save_later);
+    window.connect_close_request({
+        let data_dir = data_dir.clone();
+        move |window| {
+            placement::save(&data_dir, &placement_of(window));
+            if let Some(shell) = shell() {
+                shell.close();
+            }
+            glib::Propagation::Proceed
+        }
     });
 
     let main_loop = glib::MainLoop::new(None, false);
@@ -349,9 +412,14 @@ pub fn run(app: App) {
             video,
             player,
             press: RefCell::new(None),
+            links: RefCell::new(Inbox::default()),
             main_loop: main_loop.clone(),
         }))
     });
+    if let Some(link) = args.link.clone() {
+        post(UserEvent::Link(link));
+    }
+    platform::listen_links(&data_dir, |link| post(UserEvent::Link(link)));
     window.present();
     webview.load_uri(&start_url);
     main_loop.run();

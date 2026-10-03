@@ -79,7 +79,7 @@ function EpisodeRow({ item }: { item: BaseItemDto }) {
     <a
       href={href(itemPath(item))}
       data-ui="calendar-entry"
-      data-played={played || undefined}
+      data-watched={played || undefined}
       className={cn(
         'flex items-center gap-3 rounded-xl p-1 transition-colors hover:bg-white/5',
         played && 'text-[--muted]'
@@ -87,7 +87,7 @@ function EpisodeRow({ item }: { item: BaseItemDto }) {
     >
       <div className="relative aspect-video w-28 flex-none overflow-hidden rounded-lg bg-gray-900">
         <Artwork
-          src={landscapeUrls(client, item, { maxWidth: 320 })}
+          src={(width) => landscapeUrls(client, item, { maxWidth: width })}
           alt={itemTitle(item)}
         />
       </div>
@@ -137,7 +137,7 @@ function DayCell({
         }
       }}
       className={cn(
-        'group/day relative flex h-40 min-w-0 flex-col justify-between overflow-hidden rounded-lg bg-white/[0.03] p-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/50',
+        'group/day relative flex h-40 min-w-0 flex-col justify-between overflow-hidden rounded-lg bg-white/[0.03] p-2 transition-colors',
         items.length && 'cursor-pointer hover:bg-white/[0.05]',
         outside && 'opacity-30'
       )}
@@ -153,23 +153,27 @@ function DayCell({
                 item !== shown
                   ? 'opacity-0'
                   : today
-                    ? 'opacity-70'
-                    : 'opacity-25 group-hover/day:opacity-35'
+                    ? 'opacity-85'
+                    : 'opacity-50 group-hover/day:opacity-65'
               )}
             >
               <Artwork
-                src={landscapeUrls(client, item, { maxWidth: 480 })}
+                src={(width) =>
+                  landscapeUrls(client, item, { maxWidth: width })
+                }
                 alt=""
               />
             </div>
           ))}
-          <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-gray-950/80 via-40% to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-gray-950/70 via-35% to-transparent to-70%" />
         </div>
       )}
       <span
         className={cn(
           'relative flex size-7 items-center justify-center rounded-full text-sm font-semibold',
-          today ? 'bg-brand-500 text-white' : 'text-gray-300'
+          today
+            ? 'bg-brand-500 text-white'
+            : 'text-gray-200 [text-shadow:0_1px_3px_rgb(0_0_0/0.8)]'
         )}
       >
         {day.getDate()}
@@ -180,7 +184,7 @@ function DayCell({
             <a
               href={href(itemPath(item))}
               data-ui="calendar-entry"
-              data-played={item.UserData?.Played || undefined}
+              data-watched={item.UserData?.Played || undefined}
               onClick={(e) => e.stopPropagation()}
               onPointerEnter={() => setHovered(item)}
               onPointerLeave={() => setHovered(undefined)}
@@ -390,6 +394,8 @@ export function CalendarPage({ month }: { month?: string }) {
         )}
       </div>
       <Modal
+        data-ui="dialog"
+        data-name="calendar-day"
         open={!!openDay}
         onOpenChange={(open) => !open && setOpenDay(null)}
         title={openDay ? longDay(openDay) : undefined}

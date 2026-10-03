@@ -45,9 +45,11 @@ import { cn } from '@aiostreams/ui/core/styling';
 import { useSession } from '../lib/session';
 import { usePickableUsers } from '../lib/queries';
 import { configureUrl, navigate, to } from '../lib/paths';
-import { playbackHost } from '../lib/hosts';
+import { currentHost } from '../lib/hosts';
 import { serverAddress } from '../lib/servers';
 import { useServerInfo } from '../lib/server-info';
+import { useDiscordBrowsing } from '../lib/discord';
+import { useAction } from '../lib/input';
 import { UserAvatar } from './user-avatar';
 import { BrandLogo } from './brand-logo';
 import { VersionPickerProvider } from './version-picker';
@@ -98,7 +100,12 @@ function AccountMenu({
   const { client, user } = useSession();
   const info = useServerInfo();
   return (
-    <DropdownMenu {...position} className="min-w-52" trigger={trigger}>
+    <DropdownMenu
+      data-ui="account-menu"
+      {...position}
+      className="min-w-52"
+      trigger={trigger}
+    >
       <DropdownMenuLabel>
         <span className="block truncate">{user.Name ?? 'You'}</span>
         <span className="block truncate text-xs font-normal text-[--muted]">
@@ -113,7 +120,11 @@ function AccountMenu({
             {group.map((item) => {
               const Icon = item.iconType;
               return (
-                <DropdownMenuItem key={item.name} onClick={item.onClick}>
+                <DropdownMenuItem
+                  key={item.name}
+                  data-name={item.id}
+                  onClick={item.onClick}
+                >
                   {Icon && <Icon className="text-lg" />}
                   {item.name}
                 </DropdownMenuItem>
@@ -141,7 +152,13 @@ function SidebarAccount({ items }: { items: SidebarItem[] }) {
             collapsed={!sidebar.isBelowBreakpoint}
             isSidebar
             itemClass="relative"
-            items={[{ name: user.Name ?? 'You', iconType: SidebarAvatar }]}
+            items={[
+              {
+                id: 'account',
+                name: user.Name ?? 'You',
+                iconType: SidebarAvatar,
+              },
+            ]}
           />
         </div>
       }
@@ -193,7 +210,7 @@ function HistoryButton({
       type="button"
       aria-label={label}
       className={cn(
-        'group/history flex size-10 items-center justify-center rounded-full text-[--muted] outline-none transition hover:text-[--foreground] focus-visible:ring-2 focus-visible:ring-white/40 disabled:pointer-events-none disabled:opacity-40',
+        'group/history flex size-10 items-center justify-center rounded-full text-[--muted] transition hover:text-[--foreground] disabled:pointer-events-none disabled:opacity-40',
         className
       )}
       {...props}
@@ -207,7 +224,7 @@ function HistoryButton({
 function HistoryButtons() {
   useRouterState({ select: (s) => s.location.href });
   if (
-    playbackHost() === 'browser' &&
+    currentHost().name === 'browser' &&
     !matchMedia('(display-mode: standalone)').matches
   )
     return null;
@@ -215,6 +232,7 @@ function HistoryButtons() {
   const nav = (window as { navigation?: NavigationHistory }).navigation;
   const back = (
     <HistoryButton
+      data-name="back"
       label="Back"
       icon={LuCircleArrowLeft}
       disabled={nav?.canGoBack === false}
@@ -239,6 +257,7 @@ function HistoryButtons() {
           trigger={<span className="flex">{back}</span>}
         >
           <HistoryButton
+            data-name="forward"
             label="Forward"
             icon={LuCircleArrowRight}
             className="border border-white/10 bg-[--paper] shadow-lg shadow-black/50"
@@ -260,13 +279,18 @@ export function WebLayout() {
   const users = usePickableUsers();
   const several = (users.data?.length ?? 0) > 1;
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  useDiscordBrowsing(pathname);
+  useAction('search', () => navigate(to.search()));
+  useAction('home', () => navigate(to.home));
   const activity: SidebarItem = {
+    id: 'activity',
     name: 'Activity',
     iconType: BiHistory,
     isCurrent: pathname.startsWith('/history'),
     onClick: () => navigate(to.history),
   };
   const calendar: SidebarItem = {
+    id: 'calendar',
     name: 'Calendar',
     iconType: BiCalendar,
     isCurrent: pathname.startsWith('/calendar'),
@@ -283,12 +307,14 @@ export function WebLayout() {
 
   const items: SidebarItem[] = [
     {
+      id: 'home',
       name: 'Home',
       iconType: BiHomeAlt2,
       isCurrent: pathname === '/',
       onClick: () => navigate(to.home),
     },
     {
+      id: 'discover',
       name: 'Discover',
       iconType: BiCompass,
       isCurrent:
@@ -296,12 +322,14 @@ export function WebLayout() {
       onClick: () => navigate(to.discover()),
     },
     {
+      id: 'search',
       name: 'Search',
       iconType: BiSearch,
       isCurrent: pathname.startsWith('/search'),
       onClick: () => navigate(to.search()),
     },
     {
+      id: 'favourites',
       name: 'Favourites',
       iconType: BiHeart,
       isCurrent: pathname.startsWith('/favourites'),
@@ -312,6 +340,7 @@ export function WebLayout() {
   ];
 
   const settings: SidebarItem = {
+    id: 'settings',
     name: 'Settings',
     iconType: BiCog,
     isCurrent: pathname.startsWith('/settings'),
@@ -320,11 +349,19 @@ export function WebLayout() {
 
   const accountItems: SidebarItem[] = [
     ...(several
-      ? [{ name: 'Switch user', iconType: BiTransferAlt, onClick: switchUser }]
+      ? [
+          {
+            id: 'switch-user',
+            name: 'Switch user',
+            iconType: BiTransferAlt,
+            onClick: switchUser,
+          },
+        ]
       : []),
     ...(configure
       ? [
           {
+            id: 'configure',
             name: 'Configure',
             iconType: BiSliderAlt,
             onClick: () => window.open(configure, '_blank'),
@@ -332,9 +369,17 @@ export function WebLayout() {
         ]
       : []),
     ...(changeServer
-      ? [{ name: 'Change server', iconType: BiServer, onClick: changeServer }]
+      ? [
+          {
+            id: 'change-server',
+            name: 'Change server',
+            iconType: BiServer,
+            onClick: changeServer,
+          },
+        ]
       : []),
     {
+      id: 'sign-out',
       name: 'Sign out',
       iconType: BiLogOutCircle,
       onClick: () => confirmSignOut.open(),
@@ -344,7 +389,7 @@ export function WebLayout() {
   return (
     <AppSidebarProvider>
       <AppLayout withSidebar sidebarSize="slim">
-        <AppLayoutSidebar>
+        <AppLayoutSidebar data-ui="sidebar">
           <Sidebar
             header={<Logo />}
             items={items}
@@ -390,7 +435,7 @@ function MobileNav({
 }) {
   const inMenu = [...places, ...menuItems].some((item) => item.isCurrent);
   const tab =
-    'flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-full px-1 py-1.5 text-[0.65rem] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/60';
+    'flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-full px-1 py-1.5 text-[0.65rem] font-medium transition-colors';
   return (
     <nav
       data-ui="mobile-nav"
@@ -404,6 +449,7 @@ function MobileNav({
               key={item.name}
               type="button"
               data-ui="mobile-nav-item"
+              data-name={item.id}
               aria-current={item.isCurrent ? 'page' : undefined}
               onClick={(e) => {
                 (document.activeElement as HTMLElement | null)?.blur();
@@ -431,6 +477,8 @@ function MobileNav({
             <button
               type="button"
               data-ui="mobile-nav-item"
+              data-name="account"
+              aria-current={inMenu ? 'page' : undefined}
               aria-label="Account"
               className={cn(
                 tab,
@@ -455,6 +503,24 @@ export function PageBody({ children }: { children: React.ReactNode }) {
     <div
       data-ui="page-body"
       className="relative z-[1] space-y-8 px-4 pb-16 pt-[calc(1.5rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-10 lg:pt-[calc(2.5rem+env(safe-area-inset-top))]"
+    >
+      {children}
+    </div>
+  );
+}
+
+/** The window's height less the phone nav bar, which pages are padded for. */
+export const FILL_WINDOW =
+  'min-h-[calc(100dvh-5rem-env(safe-area-inset-bottom))] lg:min-h-dvh';
+
+export function PageMessage({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-ui="page-message"
+      className={cn(
+        'relative z-[1] flex flex-col justify-center px-4 py-10 lg:pl-0 lg:pr-10',
+        FILL_WINDOW
+      )}
     >
       {children}
     </div>
