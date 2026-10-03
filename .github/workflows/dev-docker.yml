@@ -90,6 +90,13 @@ jobs:
         id: commit
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Get image metadata
+        id: metadata
+        shell: bash
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Generate metadata
         run: node scripts/generateMetadata.cjs --channel=dev --ref=${{ needs.setup.outputs.tag }} --commit=${{ steps.commit.outputs.sha }}
 
@@ -101,6 +108,9 @@ jobs:
           push: true
           context: .
           file: ./Dockerfile
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            REVISION=${{ steps.metadata.outputs.revision }}
           outputs: type=image,name=ghcr.io/gabriel-prado/aiostreams,push-by-digest=true,name-canonical=true
           cache-from: type=gha,scope=${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix }}
