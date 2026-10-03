@@ -11,7 +11,7 @@ import {
 } from '@aiostreams/ui/carousel';
 import { Skeleton } from '@aiostreams/ui/skeleton';
 import { cn } from '@aiostreams/ui/core/styling';
-import { usePosterSize, type PosterSize } from '../lib/settings';
+import { settings, useSetting, type PosterSize } from '../lib/settings';
 
 const ITEM_WIDTH = {
   poster:
@@ -89,6 +89,7 @@ export function MediaRow({
   onEndReached,
   startIndex,
   action,
+  rowRef,
   children,
 }: {
   id?: string;
@@ -104,6 +105,7 @@ export function MediaRow({
   /** Read once, so the row stays put as its items change. */
   startIndex?: number;
   action?: React.ReactNode;
+  rowRef?: React.Ref<HTMLElement>;
   children?: React.ReactNode;
 }) {
   const restoreKey = useEntryKey(id);
@@ -113,14 +115,18 @@ export function MediaRow({
   if (!loading && !items.length) return null;
   const skeletons = (count: number) =>
     Array.from({ length: count }, (_, i) => (
-      <CarouselItem key={`skeleton-${i}`} className={width}>
+      <CarouselItem
+        key={`skeleton-${i}`}
+        data-ui="media-row-item"
+        className={width}
+      >
         <Skeleton
           className={cn('h-auto w-full rounded-xl', SKELETON_SHAPE[shape])}
         />
       </CarouselItem>
     ));
   return (
-    <section data-ui="media-row" data-row={id}>
+    <section ref={rowRef} data-ui="media-row" data-row={id} data-shape={shape}>
       <Carousel
         opts={{ align: 'start', dragFree: true, startIndex: start }}
         restoreKey={restoreKey}
@@ -130,7 +136,8 @@ export function MediaRow({
           {title ? (
             <h2
               data-ui="media-row-title"
-              className="min-w-0 truncate text-lg font-semibold sm:text-xl"
+              // Room inside the truncating box for a link's focus outline.
+              className="-m-1 min-w-0 truncate p-1 text-lg font-semibold sm:text-xl"
             >
               {title}
             </h2>
@@ -138,7 +145,11 @@ export function MediaRow({
             <div className="min-w-0">{header}</div>
           )}
           <div className="flex flex-none items-center gap-2">
-            {action}
+            {action && (
+              <div data-ui="media-row-action" className="flex">
+                {action}
+              </div>
+            )}
             <RowNav />
           </div>
         </div>
@@ -150,7 +161,11 @@ export function MediaRow({
           {loading
             ? skeletons(8)
             : items.map((child, i) => (
-                <CarouselItem key={i} className={width}>
+                <CarouselItem
+                  key={i}
+                  data-ui="media-row-item"
+                  className={width}
+                >
                   <motion.div {...fadeIn(i)}>{child}</motion.div>
                 </CarouselItem>
               ))}
@@ -186,10 +201,12 @@ export function CardGrid({
   shape?: RowShape;
   children: React.ReactNode;
 }) {
-  const [size] = usePosterSize();
+  const [size] = useSetting(settings.posterSize);
   return (
     <div
       data-ui="card-grid"
+      data-shape={shape}
+      data-size={size}
       className={cn(
         'grid gap-4',
         shape === 'wide' ? GRID_COLUMNS[size].wide : GRID_COLUMNS[size].poster

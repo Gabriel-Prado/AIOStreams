@@ -20,6 +20,7 @@ import {
   resolveConfigAlias,
   memoScope,
   personaUserId,
+  recordClientAgent,
   serverId as instanceServerId,
   sql,
   UserRepository,
@@ -88,7 +89,10 @@ export interface JellyfinRequestContext {
  */
 interface CachedConfig {
   userData: UserData;
+  /** As saved, for variants to patch before the sync and validation. */
+  stored: UserData;
   updatedAt: string;
+  loadedAt: number;
   checkedAt: number;
 }
 const CONFIG_TTL = 300;
@@ -98,7 +102,8 @@ const RECHECK_MS = 30_000;
 const configCache = Cache.getInstance<string, CachedConfig>(
   'jellyfin-config',
   5000,
-  'memory'
+  'memory',
+  { clone: false }
 );
 const inFlight = new Map<string, Promise<CachedConfig | null>>();
 
@@ -132,17 +137,22 @@ async function loadConfig(
   userData.uuid = uuid;
   userData.encryptedPassword = encryptedPassword;
   userData.ip = undefined;
-  userData = await syncUserDataUrls(userData);
-  userData = await validateConfig(userData, {
+  const stored = structuredClone(userData);
+  return {
+    userData: await syncAndValidate(userData),
+    stored,
+    updatedAt: await configUpdatedAt(uuid),
+    loadedAt: Date.now(),
+    checkedAt: Date.now(),
+  };
+}
+
+async function syncAndValidate(userData: UserData): Promise<UserData> {
+  return validateConfig(await syncUserDataUrls(userData), {
     skipVariantValidation: true,
     skipErrorsFromAddonsOrProxies: true,
     decryptValues: true,
   });
-  return {
-    userData,
-    updatedAt: await configUpdatedAt(uuid),
-    checkedAt: Date.now(),
-  };
 }
 
 /**
@@ -173,8 +183,9 @@ export async function resolveConfigEntry(
   const key = `${uuid}|${getSimpleTextHash(encryptedPassword)}`;
   let entry = await configCache.get(key).catch(() => undefined);
   if (entry && Date.now() - entry.checkedAt > RECHECK_MS) {
-    const updatedAt = await configUpdatedAt(uuid);
-    if (updatedAt !== entry.updatedAt) {
+    // Synced lists were merged in at load, so an unchanged config still expires.
+    const expired = Date.now() - entry.loadedAt > CONFIG_TTL * 1000;
+    if (expired || (await configUpdatedAt(uuid)) !== entry.updatedAt) {
       await configCache.delete(key).catch(() => undefined);
       entry = undefined;
     } else {
@@ -193,16 +204,14 @@ export async function resolveConfigEntry(
     const loaded = await pending;
     if (!loaded) return null;
     void configCache.set(key, loaded, CONFIG_TTL).catch(() => undefined);
-    // Cold loads share one promise, and the caller stamps its IP onto the
-    // result, so each needs its own copy. A cache hit is already a clone.
-    entry = structuredClone(loaded);
+    entry = loaded;
   }
   return entry;
 }
 
 /**
- * A fresh copy of the resolved config, or null when the credentials are wrong.
- * Not cloned here: the forced-memory cache already clones on read.
+ * The resolved config, or null when the credentials are wrong. Shared with the
+ * cache: copy it before changing anything.
  */
 export async function resolveConfig(
   uuid: string,
@@ -393,7 +402,6 @@ const ANONYMOUS_OK = [
   /^\/videos\/[^/]+\/stream(\.|\/|$)/i,
   /^\/videos\/[^/]+\/[^/]+\/subtitles\//i,
   /^\/items\/[^/]+\/(download|file)$/i,
-  /^\/items\/[^/]+$/i,
   /^\/items\/[^/]+\/playbackinfo$/i,
   /^\/items\/[^/]+\/mediasources$/i,
   /^\/web\/manifest\.json$/i,
@@ -434,6 +442,15 @@ interface ApiKeyClaim {
 
 const UNKNOWN_USER = 'unknown-user';
 
+/** Clients name themselves in the auth header, hidden from conditions. */
+function withClientName(userAgent: string, client: ClientInfo): string {
+  if (client.name === 'Unknown') return userAgent;
+  let product =
+    client.version === '0' ? client.name : `${client.name}/${client.version}`;
+  if (client.device !== 'Unknown') product += ` (${client.device})`;
+  return userAgent ? `${userAgent} ${product}` : product;
+}
+
 async function buildContext(
   req: Request,
   uuid: string,
@@ -447,8 +464,7 @@ async function buildContext(
 ): Promise<JellyfinRequestContext | typeof UNKNOWN_USER | null> {
   const entry = await resolveConfigEntry(uuid, encryptedPassword);
   if (!entry) return null;
-  let userData = entry.userData;
-  userData.ip = req.userIp;
+  let userData: UserData = { ...entry.userData, ip: req.userIp };
   const baseUserData = userData;
 
   let apiKey: JellyfinApiKey | null = null;
@@ -471,22 +487,41 @@ async function buildContext(
       return null;
   }
   const primaryVariants = userData.jellyfin?.primary?.variants ?? [];
-  const variantContext = buildVariantRequestContext(req, 'jellyfin');
-
-  try {
-    const own = persona ? (persona.variants ?? []) : primaryVariants;
-    const result = await activateVariants(userData, own, variantContext);
-    userData = result.userData;
-  } catch (error) {
-    logger.warn(
-      {
-        uuid,
-        persona: persona?.id,
-        err: error instanceof Error ? error.message : String(error),
-      },
-      'variant activation failed for jellyfin request'
-    );
-  }
+  const request = buildVariantRequestContext(req, 'jellyfin');
+  const variantContext = {
+    ...request,
+    userAgent: withClientName(request.userAgent, client),
+  };
+  // Tokenless contexts also serve the configuration page's own requests.
+  if (token) void recordClientAgent(uuid, variantContext.userAgent, 'jellyfin');
+  const configFor = async (selected: string[]): Promise<UserData> => {
+    try {
+      // Activation sets `healthResults` on its argument.
+      const { userData: activated, applied } = await activateVariants(
+        { ...entry.stored },
+        selected,
+        variantContext
+      );
+      const data = applied.length
+        ? await syncAndValidate(activated)
+        : { ...baseUserData, healthResults: activated.healthResults };
+      return { ...data, ip: req.userIp };
+    } catch (error) {
+      logger.warn(
+        {
+          uuid,
+          persona: persona?.id,
+          variants: selected,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'variant activation failed for jellyfin request'
+      );
+      return baseUserData;
+    }
+  };
+  userData = await configFor(
+    persona ? (persona.variants ?? []) : primaryVariants
+  );
 
   const serverIdValue = instanceServerId();
   const baseUrl = `${requestOrigin(req)}${req.baseUrl}`.replace(/\/$/, '');
@@ -509,14 +544,7 @@ async function buildContext(
     })));
   const getPrimaryEngine = () => {
     if (!persona) return getEngine();
-    return (primaryEngine ??= activateVariants(
-      baseUserData,
-      primaryVariants,
-      variantContext
-    ).then(
-      (r) => engineOf(r.userData),
-      () => engineOf(baseUserData)
-    ));
+    return (primaryEngine ??= configFor(primaryVariants).then(engineOf));
   };
   const userId = personaUserId(uuid, persona?.id ?? '');
   const watch: WatchScope =
@@ -548,6 +576,7 @@ async function buildContext(
       userId,
       uuid,
       listVersions: wantsListVersions(req, client),
+      markUnaired: finalUserData.jellyfin?.markUnaired ?? true,
     },
     engine: getEngine,
     primaryEngine: getPrimaryEngine,

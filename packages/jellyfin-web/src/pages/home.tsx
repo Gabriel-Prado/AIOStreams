@@ -3,10 +3,12 @@ import { BiCalendar, BiChevronRight, BiHistory } from 'react-icons/bi';
 import { Button } from '@aiostreams/ui/button';
 import { Badge } from '@aiostreams/ui/badge';
 import { useMediaQuery } from '@aiostreams/ui/hooks/media-query';
+import { cn } from '@aiostreams/ui/core/styling';
 import { useSession } from '../lib/session';
 import {
   useItemPages,
   libraryTypes,
+  needsGenre,
   useLibraryHeads,
   useNextUp,
   useResume,
@@ -26,19 +28,16 @@ import {
   ticksToMs,
   untilLabel,
 } from '../lib/format';
-import { href, itemPath, navigate, to } from '../lib/paths';
-import {
-  useFeatured,
-  useHeroMode,
-  useMergeNextUp,
-  type FeaturedSource,
-} from '../lib/settings';
+import { href, itemPath, navigate, to, versionsPath } from '../lib/paths';
+import { settings, useSetting, type FeaturedSource } from '../lib/settings';
+import { useFeature } from '../lib/server-info';
 import { useInView } from '../lib/use-in-view';
 import { FollowHero, Hero } from '../components/hero';
 import { MediaRow } from '../components/media-row';
 import { PosterCard, WideCard } from '../components/cards';
 import { ItemMenu } from '../components/item-menu';
-import { useVersionPicker } from '../components/version-picker';
+import { NoCatalogs } from '../components/no-catalogs';
+import { FILL_WINDOW } from '../components/layout';
 import type { BaseItemDto } from '../lib/types';
 
 const HERO_ITEMS = 8;
@@ -87,16 +86,19 @@ export function HomePage() {
   const resume = useResume();
   const nextUp = useNextUp();
   const views = useViews();
-  const [featured] = useFeatured();
-  const [mergeNextUp] = useMergeNextUp();
-  const merged = React.useMemo(
-    () => mergeRows(resume.data?.Items, nextUp.data?.Items),
-    [resume.data, nextUp.data]
+  const [featured] = useSetting(settings.featured);
+  const [mergeNextUp] = useSetting(settings.mergeNextUp);
+  const continueItems = React.useMemo(
+    () =>
+      mergeRows(resume.data?.Items, mergeNextUp ? nextUp.data?.Items : null),
+    [resume.data, nextUp.data, mergeNextUp]
   );
-  const continueItems = mergeNextUp ? merged : (resume.data?.Items ?? []);
   const continueLoading = resume.isLoading || (mergeNextUp && nextUp.isLoading);
 
   const all = views.data?.Items ?? [];
+  const noCatalogs = views.isSuccess && !all.length;
+  const genreRequired = useFeature('genreRequired');
+  const onHome = genreRequired ? all.filter((v) => !needsGenre(v)) : all;
   // A removed catalog is skipped, and a list left without any is automatic.
   const live =
     featured === 'auto' || !views.data
@@ -106,7 +108,7 @@ export function HomePage() {
         );
   const sources =
     live === 'auto' || (!live.length && featured.length)
-      ? autoSources(all)
+      ? autoSources(onHome)
       : live;
   const viewIds = sources
     .filter((s) => s.startsWith('view:'))
@@ -130,7 +132,7 @@ export function HomePage() {
     (sources.includes('next-up') && nextUp.isLoading) ||
     heads.some((h) => h.isLoading);
   // Following needs a pointer to rest on cards and room for rows under the hero.
-  const [heroMode] = useHeroMode();
+  const [heroMode] = useSetting(settings.heroMode);
   const canFollow = useMediaQuery(
     '(min-width: 1024px) and (hover: hover) and (pointer: fine)'
   );
@@ -164,32 +166,42 @@ export function HomePage() {
         />
       )}
       <UpcomingRow />
-      {views.data?.Items?.map((view) => (
-        <LibraryRow key={view.Id} view={view} />
-      ))}
+      {noCatalogs ? (
+        <div className="flex flex-1 flex-col justify-center">
+          <NoCatalogs />
+        </div>
+      ) : (
+        onHome.map((view) => <LibraryRow key={view.Id} view={view} />)
+      )}
     </>
   );
 
-  if (follow)
+  // Without catalogs the pinned hero would stand empty over the message.
+  if (follow && !noCatalogs)
     return (
       <FollowHero
         items={heroItems.length ? heroItems : continueItems}
         loading={heroLoading}
       >
-        <div className="space-y-10 px-4 pb-16 pt-8 lg:pl-0 lg:pr-10">
+        <div
+          data-ui="home-rows"
+          className="space-y-10 px-4 pb-16 pt-8 lg:pl-0 lg:pr-10"
+        >
           {rows}
         </div>
       </FollowHero>
     );
   return (
-    <div className="pb-16">
+    <div className={cn('pb-16', noCatalogs && ['flex flex-col', FILL_WINDOW])}>
       <Hero items={heroItems} loading={heroLoading} />
       <div
-        className={
+        data-ui="home-rows"
+        className={cn(
           heroItems.length || heroLoading
             ? 'relative z-[1] space-y-10 px-4 pt-2 lg:pl-0 lg:pr-10'
-            : 'relative z-[1] space-y-10 px-4 pt-[calc(1.5rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-10 lg:pt-[calc(2.5rem+env(safe-area-inset-top))]'
-        }
+            : 'relative z-[1] space-y-10 px-4 pt-[calc(1.5rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-10 lg:pt-[calc(2.5rem+env(safe-area-inset-top))]',
+          noCatalogs && 'flex flex-1 flex-col'
+        )}
       >
         {rows}
       </div>
@@ -197,7 +209,7 @@ export function HomePage() {
   );
 }
 
-/** Resume points and next episodes play straight from the row. */
+/** Resume points and next episodes play from their own page, which stays behind. */
 function EpisodeRow({
   id,
   title,
@@ -212,7 +224,6 @@ function EpisodeRow({
   loading: boolean;
 }) {
   const { client } = useSession();
-  const picker = useVersionPicker();
   return (
     <MediaRow
       id={id}
@@ -226,18 +237,10 @@ function EpisodeRow({
         return (
           <ItemMenu key={item.Id} item={item}>
             <WideCard
-              onClick={() =>
-                picker.play(item, {
-                  startMs: ticksToMs(item.UserData?.PlaybackPositionTicks),
-                })
+              onClick={() => navigate(versionsPath(item, { play: true }))}
+              image={(width) =>
+                landscapeUrls(client, item, { maxWidth: width })
               }
-              onHold={() =>
-                picker.play(item, {
-                  startMs: ticksToMs(item.UserData?.PlaybackPositionTicks),
-                  held: true,
-                })
-              }
-              image={landscapeUrls(client, item, { maxWidth: 640 })}
               title={itemTitle(item)}
               subtitle={itemSubtitle(item)}
               meta={
@@ -282,7 +285,7 @@ function UpcomingRow() {
           <WideCard
             href={href(itemPath(item))}
             unavailable
-            image={landscapeUrls(client, item, { maxWidth: 640 })}
+            image={(width) => landscapeUrls(client, item, { maxWidth: width })}
             title={itemTitle(item)}
             subtitle={itemSubtitle(item)}
             badge={
@@ -306,7 +309,7 @@ const ROW_PAGE = 20;
 function LibraryRow({ view }: { view: BaseItemDto }) {
   const { client } = useSession();
   const [near, setNear] = React.useState(false);
-  const ref = useInView<HTMLDivElement>(() => setNear(true), '400px');
+  const ref = useInView<HTMLElement>(() => setNear(true), '400px');
   const pages = useItemPages(view.Id!, {
     types: libraryTypes(view),
     recursive: true,
@@ -323,54 +326,42 @@ function LibraryRow({ view }: { view: BaseItemDto }) {
     if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // Hidden once empty, so the list's spacing skips it too.
+  // Shown loading until fetched: the row itself must mount to come into view.
   return (
-    <div
-      ref={ref}
-      hidden={!!pages.data && !items.length}
-      className="min-h-[2rem]"
-    >
-      {/* Cached rows show at once, so back restores into the full page height. */}
-      {(near || pages.data) && (
-        <MediaRow
-          id={`view:${view.Id}`}
-          title={
-            <a
-              href={href(to.discover(view.Id!))}
-              className="group/title inline-flex items-baseline gap-2"
-            >
-              {view.Name}
-              {label && (
-                <span className="text-sm font-normal text-[--muted]">
-                  {label}
-                </span>
-              )}
-              <BiChevronRight className="self-center text-xl text-[--muted] transition-transform group-hover/title:translate-x-0.5" />
-            </a>
-          }
-          shape={landscape ? 'wide' : 'poster'}
-          loading={pages.isLoading}
-          loadingMore={isFetchingNextPage}
-          onEndReached={more}
+    <MediaRow
+      rowRef={ref}
+      id={`view:${view.Id}`}
+      title={
+        <a
+          href={href(to.discover(view.Id!))}
+          className="group/title inline-flex items-baseline gap-2"
         >
-          {items.map((item) => (
-            <ItemMenu key={item.Id} item={item}>
-              <PosterCard
-                href={href(itemPath(item))}
-                shape={landscape ? 'landscape' : cardShape(item)}
-                image={posterUrl(client, item, {
-                  maxWidth: landscape ? 640 : 400,
-                })}
-                title={item.Name ?? ''}
-                subtitle={itemSubtitle(item)}
-                watched={item.UserData?.Played}
-                unwatched={item.UserData?.UnplayedItemCount ?? undefined}
-                progress={progressOf(item)}
-              />
-            </ItemMenu>
-          ))}
-        </MediaRow>
-      )}
-    </div>
+          {view.Name}
+          {label && (
+            <span className="text-sm font-normal text-[--muted]">{label}</span>
+          )}
+          <BiChevronRight className="self-center text-xl text-[--muted] transition-transform group-hover/title:translate-x-0.5" />
+        </a>
+      }
+      shape={landscape ? 'wide' : 'poster'}
+      loading={!pages.data && !pages.isError}
+      loadingMore={isFetchingNextPage}
+      onEndReached={more}
+    >
+      {items.map((item) => (
+        <ItemMenu key={item.Id} item={item}>
+          <PosterCard
+            href={href(itemPath(item))}
+            shape={landscape ? 'landscape' : cardShape(item)}
+            image={(width) => posterUrl(client, item, { maxWidth: width })}
+            title={item.Name ?? ''}
+            subtitle={itemSubtitle(item)}
+            watched={item.UserData?.Played}
+            unwatched={item.UserData?.UnplayedItemCount ?? undefined}
+            progress={progressOf(item)}
+          />
+        </ItemMenu>
+      ))}
+    </MediaRow>
   );
 }

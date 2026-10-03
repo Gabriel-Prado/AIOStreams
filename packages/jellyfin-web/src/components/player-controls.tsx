@@ -41,27 +41,43 @@ import {
 import { LoadingSpinner } from '@aiostreams/ui/loading-spinner';
 import { cn } from '@aiostreams/ui/core/styling';
 import { clock, itemSubtitle, itemTitle, ticksToMs } from '../lib/format';
-import type { PlayerController, PlayerState, Track } from '../lib/player';
-import { playbackHost } from '../lib/hosts';
-import { delayLabel } from '../lib/subtitle-lines';
 import {
-  useSeekStep,
-  useVideoFit,
+  useLatest,
+  type PlayerController,
+  type PlayerState,
+  type Track,
+} from '../lib/player';
+import { currentHost } from '../lib/hosts';
+import { delayLabel, SUBTITLE_DELAY_STEP_MS } from '../lib/subtitle-lines';
+import {
+  settings,
+  useSetting,
+  type SegmentType,
+  SUBTITLE_POSITION_MAX,
+  SUBTITLE_SIZES,
   VIDEO_FITS,
   type VideoFit,
 } from '../lib/settings';
+import {
+  stepSubtitleHeight,
+  stepSubtitleSize,
+  SUBTITLE_SIZE_LABELS,
+} from '../lib/subtitle-style';
 import { SyncByEar, SyncToLine } from './subtitle-sync';
+import { RATES, usePlayerKeys } from './player-keys';
 import { chapterAt, type Chapter } from '../lib/chapters';
 import type { BaseItemDto, MediaSegmentDto } from '../lib/types';
 
 const IDLE_MS = 2000;
-const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
-const SEGMENT_LABEL: Record<string, string> = {
-  Intro: 'Skip intro',
-  Recap: 'Skip recap',
-  Outro: 'Skip credits',
-  Preview: 'Skip preview',
-  Commercial: 'Skip ad',
+const SKIP_BUTTON_MS = 8000;
+/** Skips this close together add up to one seek. */
+const SEEK_BURST_MS = 400;
+const SEGMENT_NAME: Record<string, string> = {
+  Intro: 'intro',
+  Recap: 'recap',
+  Outro: 'credits',
+  Preview: 'preview',
+  Commercial: 'ad',
 };
 
 interface Segment {
@@ -69,6 +85,8 @@ interface Segment {
   startMs: number;
   endMs: number;
 }
+
+const segmentId = (s: Segment) => `${s.type}:${s.startMs}`;
 
 function segmentsOf(items: MediaSegmentDto[] | null | undefined): Segment[] {
   return (items ?? [])
@@ -80,7 +98,7 @@ function segmentsOf(items: MediaSegmentDto[] | null | undefined): Segment[] {
     .filter((s) => s.endMs > s.startMs);
 }
 
-function useIdle(ms: number): [boolean, () => void] {
+function useIdle(ms: number): [boolean, () => void, () => void] {
   const [idle, setIdle] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout>>(undefined);
   const wake = React.useCallback(() => {
@@ -88,11 +106,15 @@ function useIdle(ms: number): [boolean, () => void] {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setIdle(true), ms);
   }, [ms]);
+  const sleep = React.useCallback(() => {
+    clearTimeout(timer.current);
+    setIdle(true);
+  }, []);
   React.useEffect(() => {
     wake();
     return () => clearTimeout(timer.current);
   }, [wake]);
-  return [idle, wake];
+  return [idle, wake, sleep];
 }
 
 function ControlButton({
@@ -121,6 +143,9 @@ function ControlButton({
   );
 }
 
+const arrowDirection = (key: string) =>
+  key === 'ArrowRight' ? 1 : key === 'ArrowLeft' ? -1 : 0;
+
 /** The timeline, with segments and chapters marked, a hover time and drag to seek. */
 function SeekBar({
   positionMs,
@@ -129,6 +154,7 @@ function SeekBar({
   segments,
   chapters,
   onSeek,
+  onStep,
 }: {
   positionMs: number;
   durationMs: number;
@@ -136,6 +162,8 @@ function SeekBar({
   segments: Segment[];
   chapters: Chapter[];
   onSeek(ms: number): void;
+  /** The arrow keys skip as the skip buttons do. */
+  onStep(direction: number): void;
 }) {
   const bar = React.useRef<HTMLDivElement>(null);
   const [hover, setHover] = React.useState<number | null>(null);
@@ -158,8 +186,16 @@ function SeekBar({
       aria-valuemin={0}
       aria-valuemax={Math.round(durationMs / 1000)}
       aria-valuenow={Math.round(shown / 1000)}
+      aria-valuetext={clock(shown)}
+      tabIndex={0}
       data-ui="seek-bar"
-      className="group/seek relative flex h-5 cursor-pointer touch-none items-center"
+      className="group/seek relative flex h-5 cursor-pointer touch-none items-center rounded-full"
+      onKeyDown={(e) => {
+        const direction = arrowDirection(e.key);
+        if (!direction) return;
+        e.preventDefault();
+        onStep(direction);
+      }}
       onPointerDown={(e) => {
         if (!durationMs) return;
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -234,8 +270,95 @@ function SeekBar({
   );
 }
 
+/** The volume; past 100%, where the player can boost, the level turns red. */
+function VolumeBar({
+  level,
+  max,
+  onChange,
+}: {
+  level: number;
+  max: number;
+  onChange(volume: number): void;
+}) {
+  const [step] = useSetting(settings.volumeStep);
+  const bar = React.useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = React.useState(false);
+  const at = (clientX: number) => {
+    const rect = bar.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return Math.round(ratio * max * 100) / 100;
+  };
+  const share = (volume: number) => (Math.min(volume, max) / max) * 100;
+
+  return (
+    <div
+      ref={bar}
+      role="slider"
+      aria-label="Volume"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(max * 100)}
+      aria-valuenow={Math.round(level * 100)}
+      tabIndex={0}
+      // Arrows pass over it: it keeps Left and Right, and the volume has its own keys.
+      data-nav="skip"
+      data-ui="volume-bar"
+      className="relative flex h-5 w-20 flex-none cursor-pointer touch-none items-center rounded-full"
+      onKeyDown={(e) => {
+        const direction = arrowDirection(e.key);
+        if (!direction) return;
+        e.preventDefault();
+        const next = Math.round((level + (direction * step) / 100) * 100) / 100;
+        onChange(Math.min(max, Math.max(0, next)));
+      }}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDragging(true);
+        onChange(at(e.clientX));
+      }}
+      onPointerMove={(e) => {
+        if (dragging) onChange(at(e.clientX));
+      }}
+      onPointerUp={() => setDragging(false)}
+    >
+      <div
+        data-ui="volume-track"
+        className="relative h-1 w-full overflow-hidden rounded-full bg-white/20"
+      >
+        {max > 1 && (
+          <div
+            data-ui="volume-boost"
+            className="absolute inset-y-0 right-0 bg-white/15"
+            style={{ left: `${share(1)}%` }}
+          />
+        )}
+        <div
+          data-ui="volume-level"
+          className="absolute inset-y-0 left-0 bg-white"
+          style={{ width: `${share(level)}%` }}
+        />
+        {level > 1 && max > 1 && (
+          <div
+            data-ui="volume-boost-level"
+            className="absolute inset-y-0 left-0 bg-red-400"
+            style={{
+              width: `${share(level)}%`,
+              opacity: (Math.min(level, max) - 1) / (max - 1),
+            }}
+          />
+        )}
+      </div>
+      <div
+        data-ui="volume-thumb"
+        className="absolute size-3 -translate-x-1/2 rounded-full bg-white shadow"
+        style={{ left: `${share(level)}%` }}
+      />
+    </div>
+  );
+}
+
 function Volume({ player }: { player: PlayerController }) {
-  const { volume, muted } = player.state;
+  const { volume, muted, maxVolume } = player.state;
   const level = muted ? 0 : volume;
   const Icon = level === 0 ? LuVolumeX : level < 0.5 ? LuVolume1 : LuVolume2;
   return (
@@ -247,16 +370,20 @@ function Volume({ player }: { player: PlayerController }) {
       >
         <Icon />
       </ControlButton>
-      <div className="w-0 overflow-hidden transition-[width] duration-200 group-focus-within/volume:w-24 group-hover/volume:w-24">
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={Math.round(level * 100)}
-          onChange={(e) => player.setVolume(Number(e.target.value) / 100)}
-          aria-label="Volume"
-          className="mx-2 w-20 cursor-pointer accent-white"
-        />
+      <div className="w-0 overflow-hidden transition-[width] duration-200 group-focus-within/volume:w-24 group-hover/volume:w-24 md:group-focus-within/volume:w-36 md:group-hover/volume:w-36">
+        <div className="flex w-24 items-center gap-2 px-2 md:w-36">
+          <VolumeBar
+            level={level}
+            max={maxVolume}
+            onChange={player.setVolume}
+          />
+          <span
+            data-ui="volume-value"
+            className="hidden text-xs tabular-nums text-white/85 md:inline"
+          >
+            {Math.round(level * 100)}%
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -283,6 +410,8 @@ function Menu({
 }) {
   return (
     <DropdownMenu
+      data-ui="player-menu"
+      data-name={name}
       side="top"
       align="end"
       sideOffset={8}
@@ -299,6 +428,8 @@ function Menu({
         {options.map((option) => (
           <DropdownMenuItem
             key={option.id}
+            data-ui="player-menu-item"
+            data-selected={(value ?? '') === option.id || undefined}
             onClick={() => onSelect(option.id === '' ? null : option.id)}
           >
             <LuCheck
@@ -316,8 +447,6 @@ function Menu({
   );
 }
 
-const DELAY_STEP_MS = 100;
-
 const FIT_BUTTON: Record<VideoFit, { label: string; icon: React.ReactNode }> = {
   fit: { label: 'Fit', icon: <LuRatio /> },
   crop: { label: 'Crop', icon: <LuCrop /> },
@@ -325,7 +454,7 @@ const FIT_BUTTON: Record<VideoFit, { label: string; icon: React.ReactNode }> = {
 };
 
 function FitButton() {
-  const [fit, setFit] = useVideoFit();
+  const [fit, setFit] = useSetting(settings.videoFit);
   const next = VIDEO_FITS[(VIDEO_FITS.indexOf(fit) + 1) % VIDEO_FITS.length];
   return (
     <ControlButton
@@ -335,6 +464,96 @@ function FitButton() {
     >
       {FIT_BUTTON[fit].icon}
     </ControlButton>
+  );
+}
+
+const keepOpen = (e: Event) => e.preventDefault();
+
+interface Step {
+  label: string;
+  /** Missing at the end of the range. */
+  onClick?: () => void;
+}
+
+/** A value with a button either side, which leave the menu open. */
+function Stepper({
+  label,
+  value,
+  less,
+  more,
+}: {
+  label?: string;
+  value: string;
+  less: Step;
+  more: Step;
+}) {
+  const button = (step: Step, icon: React.ReactNode) => (
+    <DropdownMenuItem
+      onSelect={keepOpen}
+      onClick={step.onClick}
+      disabled={!step.onClick}
+      className="justify-center"
+      aria-label={step.label}
+    >
+      {icon}
+    </DropdownMenuItem>
+  );
+  return (
+    <div className="flex items-center gap-1 px-1 pb-1">
+      {label && <span className="flex-1 px-1 text-sm">{label}</span>}
+      {button(less, <LuMinus />)}
+      <span
+        className={cn(
+          'min-w-16 text-center text-sm tabular-nums',
+          !label && 'flex-1'
+        )}
+      >
+        {value}
+      </span>
+      {button(more, <LuPlus />)}
+    </div>
+  );
+}
+
+/** Size and height, which every video on this device keeps. */
+function SubtitleStyleSteppers() {
+  const [size] = useSetting(settings.subtitle.size);
+  const [height] = useSetting(settings.subtitle.position);
+  const at = SUBTITLE_SIZES.indexOf(size);
+  return (
+    <>
+      <DropdownMenuLabel className="pt-3">Style</DropdownMenuLabel>
+      <Stepper
+        label="Size"
+        value={SUBTITLE_SIZE_LABELS[size]}
+        less={{
+          label: 'Smaller subtitles',
+          onClick: at > 0 ? () => stepSubtitleSize(-1) : undefined,
+        }}
+        more={{
+          label: 'Bigger subtitles',
+          onClick:
+            at < SUBTITLE_SIZES.length - 1
+              ? () => stepSubtitleSize(1)
+              : undefined,
+        }}
+      />
+      <Stepper
+        label="Height"
+        value={`${height}%`}
+        less={{
+          label: 'Lower subtitles',
+          onClick: height > 0 ? () => stepSubtitleHeight(-1) : undefined,
+        }}
+        more={{
+          label: 'Raise subtitles',
+          onClick:
+            height < SUBTITLE_POSITION_MAX
+              ? () => stepSubtitleHeight(1)
+              : undefined,
+        }}
+      />
+    </>
   );
 }
 
@@ -350,31 +569,20 @@ function SubtitleSync({
   onSyncByEar(): void;
   onSyncToLine?: () => void;
 }) {
-  const keepOpen = (e: Event) => e.preventDefault();
   return (
     <>
       <DropdownMenuLabel className="pt-3">Sync</DropdownMenuLabel>
-      <div className="flex items-center gap-1 px-1 pb-1">
-        <DropdownMenuItem
-          onSelect={keepOpen}
-          onClick={() => onChange(delayMs - DELAY_STEP_MS)}
-          className="justify-center"
-          aria-label="Show subtitles earlier"
-        >
-          <LuMinus />
-        </DropdownMenuItem>
-        <span className="min-w-16 flex-1 text-center text-sm tabular-nums">
-          {delayLabel(delayMs)}
-        </span>
-        <DropdownMenuItem
-          onSelect={keepOpen}
-          onClick={() => onChange(delayMs + DELAY_STEP_MS)}
-          className="justify-center"
-          aria-label="Show subtitles later"
-        >
-          <LuPlus />
-        </DropdownMenuItem>
-      </div>
+      <Stepper
+        value={delayLabel(delayMs)}
+        less={{
+          label: 'Show subtitles earlier',
+          onClick: () => onChange(delayMs - SUBTITLE_DELAY_STEP_MS),
+        }}
+        more={{
+          label: 'Show subtitles later',
+          onClick: () => onChange(delayMs + SUBTITLE_DELAY_STEP_MS),
+        }}
+      />
       <DropdownMenuItem onClick={onSyncByEar}>
         <LuEar className="flex-none" />
         Sync by ear…
@@ -410,11 +618,40 @@ function usePositionClock(state: PlayerState): () => number {
   }, []);
 }
 
-function isTyping(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLElement &&
-    (target.isContentEditable ||
-      ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+/** Seeks at once, then gathers the skips that follow into one seek once they stop. */
+function useBurstSeek(player: PlayerController): (deltaMs: number) => void {
+  const latest = useLatest(player);
+  const burst = React.useRef<{
+    target: number;
+    sent: boolean;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  React.useEffect(() => () => clearTimeout(burst.current?.timer), []);
+  return React.useCallback(
+    (deltaMs: number) => {
+      const { state, seek } = latest.current;
+      const last = burst.current;
+      clearTimeout(last?.timer);
+      const to = Math.max(0, (last?.target ?? state.positionMs) + deltaMs);
+      const target = state.durationMs ? Math.min(state.durationMs, to) : to;
+      const settle = () => {
+        const current = burst.current;
+        if (!current || current.sent) {
+          burst.current = null;
+          return;
+        }
+        latest.current.seek(current.target);
+        current.sent = true;
+        current.timer = setTimeout(settle, SEEK_BURST_MS);
+      };
+      if (!last) seek(target);
+      burst.current = {
+        target,
+        sent: !last,
+        timer: setTimeout(settle, SEEK_BURST_MS),
+      };
+    },
+    [latest]
   );
 }
 
@@ -542,7 +779,8 @@ export function PlayerControls({
   offeringNext?: boolean;
 }) {
   const { state } = player;
-  const [idle, wake] = useIdle(IDLE_MS);
+  const [idle, wake, sleep] = useIdle(IDLE_MS);
+  const root = React.useRef<HTMLDivElement>(null);
   const [menus, setMenus] = React.useState(0);
   const pointerType = React.useRef('mouse');
   const segments = React.useMemo(() => segmentsOf(rawSegments), [rawSegments]);
@@ -573,25 +811,21 @@ export function PlayerControls({
     },
     []
   );
+  // Hidden controls let go of focus, so the arrow keys seek again.
+  React.useEffect(() => {
+    const el = document.activeElement;
+    if (!visible && el instanceof HTMLElement && root.current?.contains(el))
+      el.blur();
+  }, [visible]);
   const positionNow = usePositionClock(state);
-  const latest = React.useRef(player);
-  latest.current = player;
-  const episodes = React.useRef({ onPrevious, onNext });
-  episodes.current = { onPrevious, onNext };
+  const latest = useLatest(player);
   const loadLines = React.useCallback(
     () => latest.current.subtitleLines?.() ?? Promise.resolve(null),
-    []
+    [latest]
   );
   const [flash, showFlash] = useToggleFlash();
   const [seekFlash, showSeekFlash] = useSeekFlash();
   const [notice, showNotice] = useNotice();
-  const nudgeSubtitles = (by: number) => {
-    const p = latest.current;
-    if (!p.setSubtitleDelay || !p.state.subtitle) return;
-    const next = p.state.subtitleDelayMs + by;
-    p.setSubtitleDelay(next);
-    showNotice(`Subtitles ${delayLabel(next).toLowerCase()}`);
-  };
   const togglePlay = () => {
     showFlash(latest.current.state.paused);
     latest.current.togglePlay();
@@ -608,55 +842,59 @@ export function PlayerControls({
   };
   const closeByEar = React.useCallback(() => setByEar(false), []);
 
-  const [seekStep] = useSeekStep();
-  const stepMs = React.useRef(seekStep * 1000);
-  stepMs.current = seekStep * 1000;
-  const seekBy = (delta: number) => {
-    const { positionMs, durationMs } = latest.current.state;
-    const target = Math.max(0, positionMs + delta);
-    latest.current.seek(durationMs ? Math.min(durationMs, target) : target);
-    showSeekFlash(delta);
+  const [seekStep] = useSetting(settings.seekStep);
+  const burstSeek = useBurstSeek(player);
+  const seekBy = (deltaMs: number) => {
+    burstSeek(deltaMs);
+    showSeekFlash(deltaMs);
   };
 
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (isTyping(e.target) || document.querySelector('[role="dialog"]'))
-        return;
-      const p = latest.current;
-      const actions: Record<string, () => void> = {
-        ' ': togglePlay,
-        k: togglePlay,
-        ArrowLeft: () => seekBy(-stepMs.current),
-        j: () => seekBy(-stepMs.current),
-        ArrowRight: () => seekBy(stepMs.current),
-        l: () => seekBy(stepMs.current),
-        ArrowUp: () => p.setVolume(Math.min(1, p.state.volume + 0.05)),
-        ArrowDown: () => p.setVolume(Math.max(0, p.state.volume - 0.05)),
-        m: p.toggleMute,
-        f: p.toggleFullscreen,
-        z: () => nudgeSubtitles(-DELAY_STEP_MS),
-        x: () => nudgeSubtitles(DELAY_STEP_MS),
-        i: () => {
-          const stats = latest.current.stats;
-          stats?.show(stats.page ? null : '1');
-        },
-        P: () => episodes.current.onPrevious?.(),
-        N: () => episodes.current.onNext?.(),
-      };
-      const action = actions[e.key];
-      if (!action) return;
-      e.preventDefault();
-      action();
-      wake();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [wake]);
-
-  const segment = segments.find(
+  const [segmentActions] = useSetting(settings.segmentActions);
+  const inside = segments.filter(
     (s) => state.positionMs >= s.startMs && state.positionMs < s.endMs - 1000
   );
+  const actionOf = (s: Segment) =>
+    segmentActions[s.type as SegmentType] ?? 'ask';
+  // Each segment skips once; seeking back into one offers the button instead.
+  const skipped = React.useRef(new Set<string>());
+  const segment = inside.find(
+    (s) =>
+      actionOf(s) === 'ask' ||
+      (actionOf(s) === 'skip' && skipped.current.has(segmentId(s)))
+  );
+  const autoSkip = inside.find(
+    (s) => actionOf(s) === 'skip' && !skipped.current.has(segmentId(s))
+  );
+  React.useEffect(() => {
+    if (!autoSkip || !state.started) return;
+    skipped.current.add(segmentId(autoSkip));
+    if (offeringNext) return;
+    latest.current.seek(autoSkip.endMs);
+    showNotice(`Skipped ${SEGMENT_NAME[autoSkip.type] ?? 'segment'}`);
+  }, [autoSkip, state.started, offeringNext, showNotice]);
+  const [segmentFresh, setSegmentFresh] = React.useState(false);
+  const shownSegment = segment && segmentId(segment);
+  React.useEffect(() => {
+    if (!shownSegment) return;
+    setSegmentFresh(true);
+    const timer = setTimeout(() => setSegmentFresh(false), SKIP_BUTTON_MS);
+    return () => clearTimeout(timer);
+  }, [shownSegment]);
+  const skipSegment =
+    segment && !offeringNext ? () => player.seek(segment.endMs) : undefined;
+  usePlayerKeys({
+    player,
+    root,
+    wake,
+    hide: sleep,
+    notice: showNotice,
+    togglePlay,
+    seekBy,
+    onBack,
+    onPrevious,
+    onNext,
+    skipSegment,
+  });
   const onMenu = (open: boolean) => setMenus((n) => n + (open ? 1 : -1));
   const subtitleOptions = [{ id: '', label: 'Off' }, ...player.subtitleTracks];
   const chapters = player.chapters ?? [];
@@ -684,13 +922,13 @@ export function PlayerControls({
       name: 'back',
       label: `Back ${seekStep} seconds`,
       icon: <LuRotateCcw />,
-      onClick: () => seekBy(-stepMs.current),
+      onClick: () => seekBy(-seekStep * 1000),
     },
     forward: {
       name: 'forward',
       label: `Forward ${seekStep} seconds`,
       icon: <LuRotateCw />,
-      onClick: () => seekBy(stepMs.current),
+      onClick: () => seekBy(seekStep * 1000),
     },
     next: isEpisode && {
       name: 'next',
@@ -732,12 +970,17 @@ export function PlayerControls({
 
   return (
     <div
+      ref={root}
       data-ui="player-controls"
       data-visible={visible || undefined}
+      data-paused={state.paused || undefined}
+      data-waiting={(state.waiting && !state.error) || undefined}
       className={cn(
         'fixed inset-0 z-10 select-none',
         !visible && 'cursor-none'
       )}
+      onFocus={wake}
+      onKeyDown={wake}
       onPointerMove={wake}
       onContextMenu={(e) => e.preventDefault()}
       onPointerDown={(e) => {
@@ -833,20 +1076,25 @@ export function PlayerControls({
         // Above the bottom bar: its padding reaches up past this button.
         <div
           data-ui="skip-segment"
+          data-type={segment.type}
+          data-visible={visible || segmentFresh || undefined}
           className={cn(
-            'absolute right-[max(1rem,env(safe-area-inset-right))] z-20 transition-[bottom] duration-300 sm:right-[max(2rem,env(safe-area-inset-right))]',
+            'absolute right-[max(1rem,env(safe-area-inset-right))] z-20 transition-[bottom,opacity] duration-300 sm:right-[max(2rem,env(safe-area-inset-right))]',
             visible
               ? 'bottom-[calc(7rem+env(safe-area-inset-bottom))] sm:bottom-[calc(8rem+env(safe-area-inset-bottom))]'
-              : 'bottom-[calc(2rem+env(safe-area-inset-bottom))]'
+              : 'bottom-[calc(2rem+env(safe-area-inset-bottom))]',
+            !visible && !segmentFresh && 'pointer-events-none opacity-0'
           )}
         >
           <Button
             intent="white"
             className="rounded-full shadow-lg"
             rightIcon={<LuSkipForward />}
-            onClick={() => player.seek(segment.endMs)}
+            onClick={skipSegment}
           >
-            {SEGMENT_LABEL[segment.type] ?? 'Skip'}
+            {SEGMENT_NAME[segment.type]
+              ? `Skip ${SEGMENT_NAME[segment.type]}`
+              : 'Skip'}
           </Button>
         </div>
       )}
@@ -871,6 +1119,7 @@ export function PlayerControls({
           segments={segments}
           chapters={chapters}
           onSeek={player.seek}
+          onStep={(direction) => seekBy(direction * seekStep * 1000)}
         />
         <div className="flex items-center gap-1">
           <div className="hidden items-center gap-1 lg:flex">
@@ -904,19 +1153,23 @@ export function PlayerControls({
                 onSelect={player.setSubtitle}
                 onOpenChange={onMenu}
                 footer={
-                  player.setSubtitleDelay &&
                   state.subtitle && (
-                    <SubtitleSync
-                      delayMs={state.subtitleDelayMs}
-                      onChange={player.setSubtitleDelay}
-                      onSyncByEar={() => setByEar(true)}
-                      onSyncToLine={
-                        player.subtitleLines &&
-                        (player.canReadSubtitle?.(state.subtitle) ?? true)
-                          ? pickLine
-                          : undefined
-                      }
-                    />
+                    <>
+                      {player.setSubtitleDelay && (
+                        <SubtitleSync
+                          delayMs={state.subtitleDelayMs}
+                          onChange={player.setSubtitleDelay}
+                          onSyncByEar={() => setByEar(true)}
+                          onSyncToLine={
+                            player.subtitleLines &&
+                            (player.canReadSubtitle?.(state.subtitle) ?? true)
+                              ? pickLine
+                              : undefined
+                          }
+                        />
+                      )}
+                      <SubtitleStyleSteppers />
+                    </>
                   )
                 }
               />
@@ -969,7 +1222,7 @@ export function PlayerControls({
               onSelect={(id) => id && player.setRate(Number(id))}
               onOpenChange={onMenu}
             />
-            {(playbackHost() === 'browser' || playbackHost() === 'shell') && (
+            {(!currentHost().usePlayer || currentHost().name === 'desktop') && (
               <FitButton />
             )}
             {player.stats && (
