@@ -59,9 +59,10 @@ import {
   untilLabel,
 } from '../lib/format';
 import { href, itemPath, navigate } from '../lib/paths';
-import { useEpisodeLayout } from '../lib/settings';
+import { settings, useSetting } from '../lib/settings';
 import { useInView } from '../lib/use-in-view';
 import { MediaRow } from '../components/media-row';
+import { PageMessage } from '../components/layout';
 import { MixedGrid } from '../components/mixed-grid';
 import { PosterCard } from '../components/cards';
 import { Overview } from '../components/overview';
@@ -72,6 +73,7 @@ import {
   upToIndex,
 } from '../components/episodes';
 import { ItemMenu } from '../components/item-menu';
+import { RatingButton } from '../components/rating';
 import { ExternalLinks } from '../components/external-links';
 import { CastAndCrew } from '../components/people';
 import { KINDS, KindTabs } from '../components/kind-tabs';
@@ -86,16 +88,20 @@ export function ItemPage({
   seasonId,
   episodeId,
   pickId,
+  playId,
 }: {
   itemId: string;
   seasonId?: string;
   episodeId?: string;
   /** Opens this item's version list as the page arrives. */
   pickId?: string;
+  /** Plays this item as the page arrives, through the list unless it is skipped. */
+  playId?: string;
 }) {
   const { client } = useSession();
   const item = useItem(itemId);
   const data = item.data;
+  const [season, setSeason] = React.useState<BaseItemDto>();
   useExternalReturn();
 
   React.useEffect(() => {
@@ -106,18 +112,26 @@ export function ItemPage({
 
   if (item.isError) {
     return (
-      <div className="p-10">
-        <LuffyError title="Could not load this title" />
-      </div>
+      <PageMessage>
+        <LuffyError title="Could not load this title" className="mt-0" />
+      </PageMessage>
     );
   }
 
   return (
-    <div data-ui="item-page" data-type={data?.Type} className="relative">
-      {pickId && <PickOnArrival itemId={pickId} />}
+    <div
+      data-ui="item-page"
+      data-type={data?.Type}
+      data-watched={data?.UserData?.Played || undefined}
+      data-favourite={data?.UserData?.IsFavorite || undefined}
+      className="relative"
+    >
+      {(pickId || playId) && (
+        <PickOnArrival itemId={(pickId || playId)!} play={!pickId} />
+      )}
       <Backdrop
         images={data ? backdropUrls(client, data, { maxWidth: 1920 }) : []}
-        poster={data ? posterUrl(client, data, { maxWidth: 400 }) : null}
+        poster={data ? posterUrl(client, data, { maxWidth: 160 }) : null}
       />
       <div
         data-ui="item-body"
@@ -127,12 +141,13 @@ export function ItemPage({
           <HeaderSkeleton />
         ) : (
           <>
-            <Header item={data} />
+            <Header item={data} season={season} />
             {data.Type === 'Series' && (
               <Seasons
                 series={data}
                 initialSeasonId={seasonId}
                 focusEpisodeId={episodeId}
+                onSeason={setSeason}
               />
             )}
             {data.Type === 'BoxSet' && <SubCollections parent={data} />}
@@ -170,6 +185,8 @@ function Backdrop({
   const image = src && (
     <img
       key={src}
+      data-ui="item-backdrop-image"
+      data-wash={wash || undefined}
       src={src}
       alt=""
       onLoad={() => setLoaded(true)}
@@ -194,8 +211,16 @@ function Backdrop({
           {image}
         </BackdropFrame>
       )}
-      <div className="absolute inset-0 hidden bg-gradient-to-r from-[--background] via-[--background]/60 via-40% to-transparent lg:block" />
-      <div className="absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-[--background] via-[--background]/70 to-transparent" />
+      <div
+        data-ui="item-backdrop-shade"
+        data-name="side"
+        className="absolute inset-0 hidden bg-gradient-to-r from-[--background] via-[--background]/60 via-40% to-transparent lg:block"
+      />
+      <div
+        data-ui="item-backdrop-shade"
+        data-name="bottom"
+        className="absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-[--background] via-[--background]/70 to-transparent"
+      />
     </div>
   );
 }
@@ -214,70 +239,93 @@ function HeaderSkeleton() {
 }
 
 function Dot() {
-  return <span className="text-gray-500">•</span>;
+  return (
+    <span data-ui="meta-separator" className="text-gray-500">
+      •
+    </span>
+  );
 }
 
 function MetaRow({ item }: { item: BaseItemDto }) {
-  const parts: React.ReactNode[] = [];
+  const parts: [string, React.ReactNode][] = [];
   const start = item.ProductionYear;
   const end = item.EndDate ? new Date(item.EndDate).getFullYear() : null;
   if (item.Type === 'Series' && start) {
-    parts.push(
+    parts.push([
+      'year',
       item.Status === 'Continuing'
         ? `${start}–`
         : end && end !== start
           ? `${start}–${end}`
-          : start
-    );
-  } else if (start) parts.push(start);
+          : start,
+    ]);
+  } else if (start) parts.push(['year', start]);
   if (item.OfficialRating) {
-    parts.push(
+    parts.push([
+      'age-rating',
       <span className="rounded border border-white/30 px-1.5 py-px text-xs">
         {item.OfficialRating}
-      </span>
-    );
+      </span>,
+    ]);
   }
   const runtime = ticksToMs(item.RunTimeTicks);
-  if (runtime && item.Type !== 'Series') parts.push(duration(runtime));
+  if (runtime && item.Type !== 'Series') {
+    parts.push(['runtime', duration(runtime)]);
+  }
   if (item.CommunityRating) {
-    parts.push(
+    parts.push([
+      'score',
       <span className="inline-flex items-center gap-1">
         <BiSolidStar className="text-yellow-400" />
         {item.CommunityRating.toFixed(1)}
-      </span>
-    );
+      </span>,
+    ]);
   }
-  if (item.Type === 'Series' && item.Status) parts.push(item.Status);
+  if (item.Type === 'Series' && item.Status) {
+    parts.push(['status', item.Status]);
+  }
   if (!parts.length) return null;
   return (
     <div
       data-ui="item-meta"
       className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm text-gray-200"
     >
-      {parts.map((part, i) => (
-        <React.Fragment key={i}>
+      {parts.map(([name, part], i) => (
+        <React.Fragment key={name}>
           {i > 0 && <Dot />}
-          <span>{part}</span>
+          <span data-name={name}>{part}</span>
         </React.Fragment>
       ))}
     </div>
   );
 }
 
-function Header({ item }: { item: BaseItemDto }) {
+/** The show's links, with the selected season's own in place of the show's. */
+function linksFor(item: BaseItemDto, season?: BaseItemDto) {
+  const own = season?.ExternalUrls ?? [];
+  if (!own.length) return item.ExternalUrls;
+  const byName = new Map(own.map((link) => [link.Name, link]));
+  const shown = (item.ExternalUrls ?? []).map(
+    (link) => byName.get(link.Name) ?? link
+  );
+  return [...shown, ...own.filter((link) => !shown.includes(link))];
+}
+
+function Header({ item, season }: { item: BaseItemDto; season?: BaseItemDto }) {
   const { client } = useSession();
   const picker = useVersionPicker();
   const setPlayed = useSetPlayed();
   const setFavorite = useSetFavorite();
   const setDropped = useSetDropped();
   const nextUp = useNextUpFor(item.Id!, item.Type === 'Series');
-  const logo = logoUrl(client, item);
+  const logo = logoUrl(client, item, { maxWidth: 416 });
   const [logoFailed, setLogoFailed] = React.useState(false);
-  const poster = posterUrl(client, item, { maxWidth: 500 });
+  const poster = posterUrl(client, item, { maxWidth: 320 });
   const played = !!item.UserData?.Played;
   const favorite = !!item.UserData?.IsFavorite;
   const dropped = item.UserData?.Likes === false;
   const canDrop = useFeature('dropped');
+  const links = linksFor(item, season);
   const trailer = item.RemoteTrailers?.[0]?.Url;
 
   const target =
@@ -350,7 +398,7 @@ function Header({ item }: { item: BaseItemDto }) {
         {!!item.Genres?.length && (
           <div data-ui="item-genres" className="flex flex-wrap gap-1.5">
             {item.Genres.map((genre) => (
-              <Badge key={genre} intent="white" size="md">
+              <Badge key={genre} data-ui="item-genre" intent="white" size="md">
                 {genre}
               </Badge>
             ))}
@@ -362,7 +410,7 @@ function Header({ item }: { item: BaseItemDto }) {
             .filter(Boolean)
             .join(' · ')}
           overview={item.Overview}
-          image={landscapeUrls(client, item, { maxWidth: 960 })}
+          image={landscapeUrls(client, item, { maxWidth: 480 })}
           clampClass="max-h-[4lh]"
           className="text-sm leading-relaxed text-gray-300 sm:text-base"
         />
@@ -371,34 +419,42 @@ function Header({ item }: { item: BaseItemDto }) {
           className="flex flex-wrap items-center gap-2"
         >
           {target && (
-            <Button
-              intent="white"
-              className="rounded-full"
-              leftIcon={<BiPlay className="text-xl" />}
-              onClick={() => picker.play(target, { startMs: resumeMs })}
-              {...holdPlay}
-            >
-              {playLabel}
-            </Button>
-          )}
-          {target && !!resumeMs && (
-            <Tooltip
-              trigger={
-                <IconButton
-                  intent="gray-subtle"
-                  className="rounded-full"
-                  icon={<BiRevision />}
-                  aria-label="Play from the start"
-                  onClick={() => picker.play(target, { startMs: 0 })}
-                  {...holdRestart}
-                />
-              }
-            >
-              Play from the start
-            </Tooltip>
+            <div className="flex w-full items-center gap-2 sm:w-auto">
+              <Button
+                data-ui="item-action"
+                data-name="play"
+                intent="white"
+                className="flex-1 rounded-full sm:flex-none"
+                leftIcon={<BiPlay className="text-xl" />}
+                onClick={() => picker.play(target, { startMs: resumeMs })}
+                {...holdPlay}
+              >
+                {playLabel}
+              </Button>
+              {!!resumeMs && (
+                <Tooltip
+                  trigger={
+                    <IconButton
+                      data-ui="item-action"
+                      data-name="restart"
+                      intent="gray-subtle"
+                      className="rounded-full"
+                      icon={<BiRevision />}
+                      aria-label="Play from the start"
+                      onClick={() => picker.play(target, { startMs: 0 })}
+                      {...holdRestart}
+                    />
+                  }
+                >
+                  Play from the start
+                </Tooltip>
+              )}
+            </div>
           )}
           {trailer && (
             <Button
+              data-ui="item-action"
+              data-name="trailer"
               intent="gray-outline"
               className="rounded-full"
               leftIcon={<BiMoviePlay className="text-lg" />}
@@ -411,6 +467,9 @@ function Header({ item }: { item: BaseItemDto }) {
             <Tooltip
               trigger={
                 <IconButton
+                  data-ui="item-action"
+                  data-name="watched"
+                  data-active={played || undefined}
                   intent={played ? 'primary-subtle' : 'gray-subtle'}
                   className="rounded-full"
                   icon={<BiCheck />}
@@ -428,6 +487,9 @@ function Header({ item }: { item: BaseItemDto }) {
           <Tooltip
             trigger={
               <IconButton
+                data-ui="item-action"
+                data-name="favourite"
+                data-active={favorite || undefined}
                 intent={favorite ? 'alert-subtle' : 'gray-subtle'}
                 className="rounded-full"
                 icon={favorite ? <BiSolidHeart /> : <BiHeart />}
@@ -445,6 +507,9 @@ function Header({ item }: { item: BaseItemDto }) {
             <Tooltip
               trigger={
                 <IconButton
+                  data-ui="item-action"
+                  data-name="drop"
+                  data-active={dropped || undefined}
                   intent={dropped ? 'warning-subtle' : 'gray-subtle'}
                   className="rounded-full"
                   icon={dropped ? <BiSolidDislike /> : <BiDislike />}
@@ -459,10 +524,19 @@ function Header({ item }: { item: BaseItemDto }) {
               {dropped ? 'Undrop show' : 'Drop show'}
             </Tooltip>
           )}
-          {!!item.ExternalUrls?.length && (
-            <span className="mx-1 h-6 w-px bg-white/10" aria-hidden />
+          {(item.Type === 'Movie' || item.Type === 'Series') && (
+            <RatingButton item={item} />
           )}
-          <ExternalLinks links={item.ExternalUrls} />
+          {!!links?.length && (
+            <span
+              data-ui="item-actions-divider"
+              className="mx-1 hidden h-6 w-px bg-white/10 sm:block"
+              aria-hidden
+            />
+          )}
+          <div className="basis-full sm:basis-auto">
+            <ExternalLinks links={links} />
+          </div>
         </div>
       </div>
     </div>
@@ -533,13 +607,15 @@ function Seasons({
   series,
   initialSeasonId,
   focusEpisodeId,
+  onSeason,
 }: {
   series: BaseItemDto;
   initialSeasonId?: string;
   focusEpisodeId?: string;
+  onSeason: (season: BaseItemDto | undefined) => void;
 }) {
   const { client } = useSession();
-  const [layoutPref] = useEpisodeLayout();
+  const [layoutPref] = useSetting(settings.episodeLayout);
   const wide = useMediaQuery('(min-width: 1024px)');
   const layout = layoutPref === 'auto' ? (wide ? 'row' : 'list') : layoutPref;
   const seasons = useSeasons(series.Id!, true);
@@ -554,6 +630,10 @@ function Seasons({
     setSeasonId(next.Id!);
   }, [list, seasonId]);
   const season = list.find((s) => s.Id === seasonId);
+  React.useEffect(() => onSeason(season), [season, onSeason]);
+  React.useEffect(() => () => onSeason(undefined), [onSeason]);
+  // A show of one season is rated as the show.
+  const rateSeason = list.filter((s) => (s.IndexNumber ?? 0) > 0).length > 1;
   const episodes = useEpisodes(series.Id!, seasonId);
   const items = episodes.data?.Items ?? [];
   const loading = seasons.isLoading || episodes.isLoading;
@@ -562,6 +642,18 @@ function Seasons({
   const ownPosters = list.some(
     (s) =>
       s.ImageTags?.Primary && s.ImageTags.Primary !== series.ImageTags?.Primary
+  );
+  const summaryLine = (summary || (rateSeason && season)) && (
+    <p
+      data-ui="season-summary"
+      className="flex flex-wrap items-center gap-x-2 text-sm text-[--muted]"
+    >
+      {summary}
+      {summary && rateSeason && season && <span aria-hidden>·</span>}
+      {rateSeason && season && (
+        <RatingButton item={season} label="Rate season" inline />
+      )}
+    </p>
   );
   const focusIndex = focusEpisodeId
     ? items.findIndex((e) => e.Id === focusEpisodeId)
@@ -585,7 +677,7 @@ function Seasons({
         >
           {list.map((s) => {
             const selected = s.Id === seasonId;
-            const poster = posterUrl(client, s, { maxWidth: 300 });
+            const poster = posterUrl(client, s, { maxWidth: 120 });
             return (
               <ItemMenu key={s.Id} item={s} onPage>
                 <button
@@ -654,11 +746,7 @@ function Seasons({
           {season.Overview}
         </p>
       )}
-      {summary && layout === 'list' && (
-        <p data-ui="season-summary" className="text-sm text-[--muted]">
-          {summary}
-        </p>
-      )}
+      {layout === 'list' && summaryLine}
       {layout === 'row' ? (
         loading ? (
           <MediaRow key="loading" shape="wide" itemClass={ROW_WIDTH} loading />
@@ -670,16 +758,7 @@ function Seasons({
               shape="wide"
               itemClass={ROW_WIDTH}
               startIndex={focusIndex >= 0 ? focusIndex : upToIndex(items)}
-              header={
-                summary && (
-                  <p
-                    data-ui="season-summary"
-                    className="text-sm text-[--muted]"
-                  >
-                    {summary}
-                  </p>
-                )
-              }
+              header={summaryLine}
               action={
                 summary &&
                 items.length > 1 && (
@@ -820,6 +899,8 @@ function AllEpisodes({
   const target = React.useRef<HTMLDivElement>(null);
   return (
     <Modal
+      data-ui="dialog"
+      data-name="all-episodes"
       trigger={
         <Button
           size="sm"
@@ -897,7 +978,7 @@ function SubCollections({ parent }: { parent: BaseItemDto }) {
           <PosterCard
             href={href(itemPath(item))}
             shape={landscape ? 'landscape' : cardShape(item)}
-            image={posterUrl(client, item, { maxWidth: landscape ? 640 : 400 })}
+            image={(width) => posterUrl(client, item, { maxWidth: width })}
             title={item.Name ?? ''}
             subtitle={itemSubtitle(item)}
             watched={item.UserData?.Played}
@@ -1008,7 +1089,7 @@ function Similar({ itemId }: { itemId: string }) {
             <ItemMenu key={item.Id} item={item}>
               <PosterCard
                 href={href(itemPath(item))}
-                image={posterUrl(client, item, { maxWidth: 400 })}
+                image={(width) => posterUrl(client, item, { maxWidth: width })}
                 title={item.Name ?? ''}
                 subtitle={itemSubtitle(item)}
                 watched={item.UserData?.Played}

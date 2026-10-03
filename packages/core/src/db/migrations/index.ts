@@ -37,6 +37,9 @@ import { watchSessionDevice } from './0036_watch_session_device.js';
 import { watchSinkRetired } from './0037_watch_sink_retired.js';
 import { watchSessionUser } from './0038_watch_session_user.js';
 import { watchStateDropped } from './0039_watch_state_dropped.js';
+import { watchStateRating } from './0040_watch_state_rating.js';
+import { indexTrim } from './0041_index_trim.js';
+import { watchAirTimes } from './0042_watch_air_times.js';
 import type { Migration } from './types.js';
 
 export const MIGRATIONS: readonly Migration[] = [
@@ -79,6 +82,9 @@ export const MIGRATIONS: readonly Migration[] = [
   watchSinkRetired,
   watchSessionUser,
   watchStateDropped,
+  watchStateRating,
+  indexTrim,
+  watchAirTimes,
 ];
 
 export type { Migration } from './types.js';
