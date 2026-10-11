@@ -168,7 +168,7 @@ export function userDataFromRow(
   if (!row) return defaultUserData(itemId);
   const duration = runtimeMs || row.durationMs;
   const ud: UserItemDataDto = {
-    PlaybackPositionTicks: row.played ? 0 : msToTicks(row.positionMs),
+    PlaybackPositionTicks: msToTicks(row.positionMs),
     PlayCount: row.playCount,
     IsFavorite: row.favorite,
     Played: row.played,
@@ -178,7 +178,7 @@ export function userDataFromRow(
   Object.assign(ud, ratingUserData(row));
   if (row.lastPlayedAt)
     ud.LastPlayedDate = new Date(row.lastPlayedAt).toISOString();
-  if (!row.played && duration > 0 && row.positionMs > 0) {
+  if (duration > 0 && row.positionMs > 0) {
     ud.PlayedPercentage = Math.min(100, (row.positionMs / duration) * 100);
   }
   return ud;
@@ -779,6 +779,12 @@ export function buildEpisode(
     ExternalUrls: externalUrls(extra.providerIds, 'episode'),
     UserData: userDataFromRow(id, playstate, runtimeMs),
     Path: path,
+    ...((extra.filler || extra.recap) && {
+      aiostreams: {
+        ...(extra.filler && { filler: true }),
+        ...(extra.recap && { recap: true }),
+      },
+    }),
     ...(missing || !ctx.listVersions
       ? {}
       : {

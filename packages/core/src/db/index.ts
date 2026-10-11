@@ -74,6 +74,10 @@ export {
 } from './repositories/config-sessions.js';
 export { LinkedAccountRepository } from './repositories/linked-accounts.js';
 export {
+  JellyfinAddressRepository,
+  type JellyfinAddressTarget,
+} from './repositories/jellyfin-addresses.js';
+export {
   CommunityRepository,
   type CommunityItemInsert,
   type CommunityLiveUpdate,
@@ -100,6 +104,21 @@ export {
   type WatchSessionUpsert,
 } from './repositories/watch-sessions.js';
 export { JellyfinRepository } from './repositories/jellyfin.js';
+export {
+  MediaInfoRepository,
+  type MediaInfoRow,
+  type MediaInfoKind,
+  type MediaInfoFileFilter,
+} from './repositories/media-info.js';
+export {
+  MediaInfoProbeRepository,
+  type ProbeAttempt,
+  type ProbeAttemptFilter,
+  type ProbeKind,
+  type ProbeOutcome,
+  type ProbePath,
+  type ProbeReader,
+} from './repositories/media-info-probes.js';
 export {
   PlaybackHandoffRepository,
   type SinkRow,

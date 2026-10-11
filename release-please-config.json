@@ -17,7 +17,9 @@
         "release-please-config.json",
         "packages/seanime-extensions",
         "packages/seanime-extension",
-        "packages/desktop"
+        "packages/desktop",
+        "packages/smart-tv",
+        "packages/android"
       ],
       "pull-request-title-pattern": "chore: release ${version}"
     },
@@ -62,6 +64,20 @@
           "jsonpath": "$.package[?(@.name.value == 'aiostreams-desktop' || @.name.value == 'aiostreams-desktop-core')].version"
         }
       ]
+    },
+    "packages/smart-tv": {
+      "release-type": "node",
+      "component": "smart-tv",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "pull-request-title-pattern": "chore(smart-tv): release ${version}"
+    },
+    "packages/android": {
+      "release-type": "simple",
+      "component": "android",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "pull-request-title-pattern": "chore(android): release ${version}"
     }
   }
 }

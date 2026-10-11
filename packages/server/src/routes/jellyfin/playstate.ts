@@ -5,6 +5,7 @@ import {
   getWatchStateProvider,
   watchIdentityFor,
   openWatchSession,
+  playedThrough,
   resolveByItem,
   descriptorOf,
   sessionKeyFor,
@@ -187,6 +188,12 @@ async function record(
   const ref = contentRefOf(d);
   const identity = await watchIdentityFor(ref);
   const session = sessionOf(ctx, opts.playSessionId);
+  const provider = getWatchStateProvider();
+  if (type === 'stop' && positionMs == null)
+    positionMs =
+      (await provider.getMany(ctx.watch, [identity.itemKey])).get(
+        identity.itemKey
+      )?.positionMs ?? 0;
 
   // one meta call on start and stop, none on the 5-10 s progress ticks
   const item =
@@ -204,7 +211,6 @@ async function record(
     durationMs,
     snapshot: snapshotOf(item),
   };
-  const provider = getWatchStateProvider();
   // Read before the start clears it, so addons that only keep lists hear the undrop.
   const seriesKey = type === 'start' ? identity.seriesKey : null;
   const undrops =
@@ -213,7 +219,7 @@ async function record(
   const row = await provider.record(ctx.watch, event);
 
   if (type === 'start') {
-    await openWatchSession(session, ref, {
+    const opened = await openWatchSession(session, ref, {
       positionMs,
       durationMs,
       paused: false,
@@ -223,6 +229,7 @@ async function record(
       item,
       positionMs,
       durationMs,
+      sessionStartedAt: opened?.startedAt,
     });
     if (undrops)
       await reportListChange(ctx, 'undropped', {
@@ -234,12 +241,15 @@ async function record(
   }
 
   if (type === 'stop') {
-    await closeWatchSession(session);
+    const closed = await closeWatchSession(session);
     await reportPlayback(ctx, 'stop', ref, {
       row,
       item,
       positionMs,
       durationMs,
+      played: playedThrough(positionMs ?? 0, durationMs || row?.durationMs),
+      sessionStartedAt:
+        closed?.itemKey === identity.itemKey ? closed.startedAt : undefined,
     });
     return;
   }
@@ -274,6 +284,7 @@ async function progressed(
       row,
       positionMs,
       durationMs: existing.durationMs || undefined,
+      sessionStartedAt: existing.startedAt,
     });
 }
 
@@ -732,9 +743,15 @@ router.post(
       (d.k === 'movie' || d.k === 'episode')
     ) {
       const item = await itemFromDescriptor(ctx, d).catch(() => null);
+      const at =
+        typeof body.LastPlayedDate === 'string'
+          ? Date.parse(body.LastPlayedDate)
+          : NaN;
       await getWatchStateProvider().record(ctx.watch, {
         type: 'stop',
         identity: await watchIdentityFor(contentRefOf(d)),
+        // A time ahead of now would outrank every later play.
+        at: at > 0 && at <= Date.now() ? at : undefined,
         positionMs: ticksToMs(body.PlaybackPositionTicks),
         durationMs:
           typeof item?.RunTimeTicks === 'number'

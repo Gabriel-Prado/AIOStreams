@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use aiostreams_desktop_core::bridge::{Inbound, Outbound, origin};
 use aiostreams_desktop_core::discord;
+use aiostreams_desktop_core::external::External;
 use aiostreams_desktop_core::player::Player;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
@@ -18,8 +19,9 @@ use crate::placement::{self, MIN_SIZE, Placement, SETTLE};
 use crate::updates::Updater;
 use crate::{
     App, Edge, Served, UserEvent, allowed_navigation, handle, platform, receive_script, serve,
-    start_player,
+    start_downloads, start_external, start_player,
 };
+use aiostreams_desktop_core::downloads::{Command as DownloadCommand, Downloads};
 
 /// The bridge posts through `window.ipc`, as wry names it on the other platforms.
 const IPC_SHIM: &str = "window.ipc = { postMessage: (message) => window.webkit.messageHandlers.ipc.postMessage(message) };";
@@ -47,6 +49,8 @@ struct Shell {
     webview: webkit6::WebView,
     video: platform::VideoSurface,
     player: Rc<RefCell<Option<Player>>>,
+    external: Rc<External>,
+    downloads: Rc<Downloads>,
     press: RefCell<Option<Press>>,
     links: RefCell<Inbox>,
     main_loop: glib::MainLoop,
@@ -169,6 +173,33 @@ impl Shell {
                     self.emit(Outbound::Link { url: link });
                 }
             }
+            UserEvent::ChoosePlayer(kind) => {
+                let dialog = gtk4::FileDialog::builder()
+                    .title(format!("Choose {}", kind.id()))
+                    .modal(true)
+                    .build();
+                let external = self.external.clone();
+                dialog.open(Some(&self.window), None::<&gio::Cancellable>, move |file| {
+                    if let Some(path) = file.ok().and_then(|f| f.path()) {
+                        external.set_program(kind, path);
+                    }
+                    if let Some(shell) = shell() {
+                        shell.emit(external.players());
+                    }
+                });
+            }
+            UserEvent::ChooseDownloadFolder => {
+                let dialog = gtk4::FileDialog::builder()
+                    .title("Choose where downloads go")
+                    .modal(true)
+                    .build();
+                let downloads = self.downloads.clone();
+                dialog.select_folder(Some(&self.window), None::<&gio::Cancellable>, move |file| {
+                    if let Some(folder) = file.ok().and_then(|f| f.path()) {
+                        downloads.send(DownloadCommand::SetFolder(folder));
+                    }
+                });
+            }
         }
     }
 
@@ -176,6 +207,7 @@ impl Shell {
         log::info!("closing");
         self.video.shutdown();
         self.player.borrow_mut().take();
+        self.external.close();
         self.main_loop.quit();
     }
 }
@@ -227,7 +259,7 @@ pub fn run(app: App) {
     video.widget().set_overflow(gtk4::Overflow::Hidden);
     window.set_child(Some(video.widget()));
     let started = start_player(&video, &paths.mpv, |message| {
-        if let Outbound::MpvProp { name, data } = &message
+        if let Outbound::MpvProp { name, data, .. } = &message
             && name == "idle-active"
             && data == true
         {
@@ -237,7 +269,13 @@ pub fn run(app: App) {
     });
     video.attach(started.mpv());
     let player = Rc::new(RefCell::new(Some(started)));
+    let external = Rc::new(start_external(&paths, |message| {
+        post(UserEvent::Emit(receive_script(&message)))
+    }));
     let updater = Rc::new(Updater::start(|message| {
+        post(UserEvent::Emit(receive_script(&message)))
+    }));
+    let downloads = Rc::new(start_downloads(&paths, |message| {
         post(UserEvent::Emit(receive_script(&message)))
     }));
     discord::start(|message| post(UserEvent::Emit(receive_script(&message))));
@@ -280,7 +318,8 @@ pub fn run(app: App) {
     content.connect_script_message_received(Some("ipc"), {
         let (webview, player, app_origin) =
             (webview.downgrade(), player.clone(), app_origin.clone());
-        let (paths, updater) = (paths.clone(), updater.clone());
+        let (external, paths, updater) = (external.clone(), paths.clone(), updater.clone());
+        let downloads = downloads.clone();
         move |_, value| {
             let page = webview.upgrade().and_then(|w| w.uri()).unwrap_or_default();
             let from = origin(&page).unwrap_or_default();
@@ -288,7 +327,9 @@ pub fn run(app: App) {
                 return log::warn!("ignored a message from {from}");
             }
             match serde_json::from_str::<Inbound>(&value.to_str()) {
-                Ok(message) => handle(message, &player, &post, &paths, &updater),
+                Ok(message) => handle(
+                    message, &player, &external, &post, &paths, &updater, &downloads,
+                ),
                 Err(e) => log::warn!("bad message: {e}"),
             }
         }
@@ -315,7 +356,7 @@ pub fn run(app: App) {
         }
     });
     webview.connect_load_changed({
-        let player = player.clone();
+        let (player, external) = (player.clone(), external.clone());
         move |_, event| {
             if let LoadEvent::Started = event {
                 if let Some(shell) = shell() {
@@ -324,6 +365,7 @@ pub fn run(app: App) {
                 if let Some(p) = player.borrow().as_ref() {
                     p.stop();
                 }
+                external.close();
             }
         }
     });
@@ -411,6 +453,8 @@ pub fn run(app: App) {
             webview: webview.clone(),
             video,
             player,
+            external,
+            downloads,
             press: RefCell::new(None),
             links: RefCell::new(Inbox::default()),
             main_loop: main_loop.clone(),

@@ -21,15 +21,42 @@ pub enum UpdateChannel {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Inbound {
+    /// `external` messages go to the player started with `external-open`.
     MpvCommand {
         args: Vec<Value>,
+        #[serde(default)]
+        external: bool,
     },
     MpvSetProp {
         name: String,
         value: Value,
+        #[serde(default)]
+        external: bool,
     },
     /// Resends every observed property's current value.
-    MpvSync,
+    MpvSync {
+        #[serde(default)]
+        external: bool,
+    },
+    /// A subtitle file the user dropped or picked, base64-encoded.
+    SubtitleFile {
+        name: String,
+        data: String,
+        #[serde(default)]
+        external: bool,
+    },
+    /// Asks for an `external-players` answer.
+    ExternalPlayers,
+    /// Lets the user pick where a player is installed.
+    ExternalChoose {
+        player: String,
+    },
+    /// Starts the player, or keeps the one already open, for the next `loadfile`.
+    ExternalOpen {
+        player: String,
+        title: Option<String>,
+    },
+    ExternalClose,
     Fullscreen {
         value: Option<bool>,
     },
@@ -78,6 +105,76 @@ pub enum Inbound {
     },
     /// The page can take `link` messages, and any that arrived before it loaded.
     LinksReady,
+    /// Downloads to fetch; one already known keeps its state.
+    DownloadAdd {
+        jobs: Vec<DownloadJob>,
+    },
+    /// `pause`, `resume` or `retry`.
+    DownloadControl {
+        id: String,
+        action: String,
+    },
+    /// Forgets a download, and with `files` deletes what it saved.
+    DownloadRemove {
+        id: String,
+        files: bool,
+    },
+    /// Asks for a `download-state` answer.
+    DownloadList,
+    /// Lets the user pick the folder new downloads go to.
+    DownloadFolder,
+    /// Shows the downloads folder, or one download's, in the file manager.
+    DownloadOpen {
+        id: Option<String>,
+    },
+    DownloadConfig {
+        concurrent: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    Video,
+    Subtitle,
+    Image,
+}
+
+/// A file to fetch, at a path relative to the downloads folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadFile {
+    pub url: String,
+    pub path: String,
+    pub kind: FileKind,
+}
+
+/// A file the page writes itself, such as the item's details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadText {
+    pub path: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadJob {
+    pub id: String,
+    pub title: String,
+    pub files: Vec<DownloadFile>,
+    #[serde(default)]
+    pub texts: Vec<DownloadText>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DownloadStatus {
+    pub id: String,
+    /// `queued`, `downloading`, `paused`, `failed` or `done`.
+    pub state: &'static str,
+    pub bytes: u64,
+    pub total: Option<u64>,
+    pub error: Option<String>,
+    /// Where a finished download's video and subtitles are, for playing it.
+    pub video: Option<String>,
+    pub subtitles: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,12 +183,28 @@ pub enum Outbound {
     MpvProp {
         name: String,
         data: Value,
+        #[serde(skip_serializing_if = "is_false")]
+        external: bool,
     },
     MpvEvent {
         name: &'static str,
+        #[serde(skip_serializing_if = "is_false")]
+        external: bool,
     },
     MpvEnded {
         reason: &'static str,
+        error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cause: Option<String>,
+        #[serde(skip_serializing_if = "is_false")]
+        external: bool,
+    },
+    /// The players this computer can start; empty where the app may not start programs.
+    ExternalPlayers {
+        players: Vec<ExternalPlayer>,
+    },
+    /// The external player closed, or with `error`, never started.
+    ExternalEnded {
         error: Option<String>,
     },
     Fullscreen {
@@ -132,6 +245,27 @@ pub enum Outbound {
     Error {
         message: String,
     },
+    DownloadState {
+        folder: String,
+        jobs: Vec<DownloadStatus>,
+    },
+    /// The running download's video; `speed` in bytes a second.
+    DownloadProgress {
+        id: String,
+        bytes: u64,
+        total: Option<u64>,
+        speed: u64,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExternalPlayer {
+    pub id: &'static str,
+    pub path: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Outbound {
@@ -157,6 +291,7 @@ pub const OBSERVED: &[(&str, Kind)] = &[
     ("track-list", Kind::Json),
     ("chapter-list", Kind::Json),
     ("video-params", Kind::Json),
+    ("fullscreen", Kind::Flag),
 ];
 
 pub const THROTTLED: &[&str] = &["time-pos", "demuxer-cache-time"];
@@ -189,6 +324,7 @@ const SETTABLE: &[&str] = &[
     "hwdec",
     "audio-channels",
     "audio-spdif",
+    "fullscreen",
 ];
 
 const LOADFILE_OPTIONS: &[&str] = &[
@@ -275,14 +411,16 @@ fn check_number(v: Option<&String>) -> Result<(), String> {
     }
 }
 
-pub fn command(args: &[Value]) -> Result<Vec<String>, String> {
+/// `local` says whether a path is one of the app's own downloads, the only
+/// files the page may open.
+pub fn command(args: &[Value], local: &dyn Fn(&str) -> bool) -> Result<Vec<String>, String> {
     let args = args.iter().map(arg_string).collect::<Result<Vec<_>, _>>()?;
     let name = args.first().ok_or("empty command")?.as_str();
     match name {
         // loadfile <url> [<flags> [<index> [<options>]]]
         "loadfile" => {
-            if !args.get(1).is_some_and(|u| is_web_url(u)) {
-                return Err("loadfile takes an http(s) url".into());
+            if !args.get(1).is_some_and(|u| is_web_url(u) || local(u)) {
+                return Err("loadfile takes an http(s) url or a download".into());
             }
             check_flags(
                 args.get(2),
@@ -303,8 +441,8 @@ pub fn command(args: &[Value]) -> Result<Vec<String>, String> {
             }
         }
         "sub-add" | "audio-add" => {
-            if !args.get(1).is_some_and(|u| is_web_url(u)) {
-                return Err(format!("{name} takes an http(s) url"));
+            if !args.get(1).is_some_and(|u| is_web_url(u) || local(u)) {
+                return Err(format!("{name} takes an http(s) url or a download"));
             }
             check_flags(args.get(2), &["select", "auto", "cached"])?;
             if args.len() > 5 {
@@ -324,7 +462,7 @@ pub fn command(args: &[Value]) -> Result<Vec<String>, String> {
                 return Err("too many arguments".into());
             }
         }
-        "stop" | "frame-step" | "frame-back-step" => {
+        "stop" | "frame-step" | "frame-back-step" | "playlist-clear" => {
             if args.len() > 1 {
                 return Err("too many arguments".into());
             }

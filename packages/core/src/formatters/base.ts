@@ -38,7 +38,7 @@ import { comparatorFunctions } from './engine/comparators.js';
  */
 
 type FormatterTrack = {
-  [K in keyof MediaTrack]-?: NonNullable<MediaTrack[K]> | null;
+  [K in keyof Omit<MediaTrack, 'index'>]-?: NonNullable<MediaTrack[K]> | null;
 };
 
 // stored tracks omit unset fields, which would read as unknown properties
@@ -46,6 +46,7 @@ const TRACK_DEFAULTS: FormatterTrack = {
   lang: null,
   codec: null,
   tag: null,
+  tags: null,
   channels: null,
   title: null,
   default: false,
@@ -58,7 +59,7 @@ const TRACK_DEFAULTS: FormatterTrack = {
 };
 
 function formatterTracks(tracks: MediaTrack[] | undefined): FormatterTrack[] {
-  return describedTracks(tracks).map((track) => ({
+  return describedTracks(tracks).map(({ index: _index, ...track }) => ({
     ...TRACK_DEFAULTS,
     ...track,
   }));

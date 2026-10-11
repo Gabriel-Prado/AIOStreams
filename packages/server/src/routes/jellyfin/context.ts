@@ -13,6 +13,7 @@ import {
   getSimpleTextHash,
   isConfigUuid,
   isEncrypted,
+  JellyfinAddressRepository,
   PERSONA_PIN_PATTERN,
   verifyHash,
   mintToken,
@@ -239,6 +240,16 @@ export async function resolveConfigFor(
   return entry ? { uuid, userData: entry.userData } : null;
 }
 
+/** A persona with a history of its own keeps its watch state and preferences apart. */
+export function watchScopeOf(
+  uuid: string,
+  persona: JellyfinPersona | null | undefined
+): WatchScope {
+  return persona && persona.history !== 'shared'
+    ? { uuid, persona: persona.id }
+    : accountScope(uuid);
+}
+
 export function personasOf(userData: UserData): JellyfinPersona[] {
   return userData.jellyfin?.personas ?? [];
 }
@@ -381,6 +392,17 @@ export function bodyOf(req: Request): Record<string, unknown> {
   return req.body && typeof req.body === 'object'
     ? (req.body as Record<string, unknown>)
     : {};
+}
+
+/** A body field by name in any case, as Jellyfin reads JSON. */
+export function bodyField(req: Request, name: string): unknown {
+  const body = bodyOf(req);
+  if (name in body) return body[name];
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(body)) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return undefined;
 }
 
 /** Routes that must answer without a credential (clients send none). */
@@ -532,7 +554,10 @@ async function buildContext(
   let leafEvidence: Promise<LeafEvidence> | null = null;
   const finalUserData = userData;
   const engineOf = (data: UserData) =>
-    new AIOStreams(data, { skipFailedAddons: true }).initialise();
+    new AIOStreams(data, {
+      skipFailedAddons: true,
+      path: 'jellyfin',
+    }).initialise();
   const getEngine = () => (engine ??= engineOf(finalUserData));
   const getViews = () =>
     (views ??= getEngine().then((e) => listViews(e, finalUserData)));
@@ -547,10 +572,7 @@ async function buildContext(
     return (primaryEngine ??= configFor(primaryVariants).then(engineOf));
   };
   const userId = personaUserId(uuid, persona?.id ?? '');
-  const watch: WatchScope =
-    persona && persona.history !== 'shared'
-      ? { uuid, persona: persona.id }
-      : accountScope(uuid);
+  const watch = watchScopeOf(uuid, persona);
   return {
     uuid,
     encryptedPassword,
@@ -587,6 +609,8 @@ async function buildContext(
   };
 }
 
+const ADDRESS_CODE = /^[a-z0-9]{10,32}$/;
+
 export const jellyfinContext: RequestHandler = async (req, res, next) => {
   try {
     const params = req.params as Record<string, string | undefined>;
@@ -617,6 +641,15 @@ export const jellyfinContext: RequestHandler = async (req, res, next) => {
       const target = await resolvePickerAlias(params.alias);
       if (!target) {
         res.status(401).json({ Message: 'Unknown configuration' });
+        return;
+      }
+      req.jfMount = target;
+    } else if (params.code) {
+      const target = ADDRESS_CODE.test(params.code)
+        ? await JellyfinAddressRepository.resolve(params.code)
+        : null;
+      if (!target) {
+        res.status(401).json({ Message: 'Unknown address' });
         return;
       }
       req.jfMount = target;

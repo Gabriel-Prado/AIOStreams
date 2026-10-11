@@ -19,6 +19,7 @@ import {
   dashboardApi,
   usenetApi,
   jellyfinApi,
+  mediaInfoApi,
   communityApi,
 } from './routes/api/index.js';
 import {
@@ -68,6 +69,7 @@ import {
   linkedAccountsRateLimiter,
   communityApiRateLimiter,
   syncApiRateLimiter,
+  mediaInfoApiRateLimiter,
   internalMiddleware,
   stremioStreamRateLimiter,
   stremioManifestRateLimiter,
@@ -98,7 +100,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const frontendRoot = path.join(__dirname, '../../frontend/dist');
-export const jellyfinWebRoot = path.join(__dirname, '../../jellyfin-web/dist');
+export const jellyfinWebRoot = path.join(__dirname, '../../web/dist');
 export const staticRoot = path.join(__dirname, './static');
 
 app.use(ipMiddleware);
@@ -143,6 +145,7 @@ apiRouter.use('/anime', animeApi);
 apiRouter.use('/proxy', proxyApi);
 apiRouter.use('/templates', templatesApi);
 apiRouter.use('/sync', syncApiRateLimiter, syncApi);
+apiRouter.use('/media-info', mediaInfoApiRateLimiter, mediaInfoApi);
 apiRouter.use('/linked-accounts', linkedAccountsRateLimiter, linkedAccountsApi);
 apiRouter.use('/community', communityApiRateLimiter, communityApi);
 apiRouter.use('/auth', authApi);
@@ -241,6 +244,7 @@ app.use('/community', publicCommunityRouter);
 app.use('/webdav', webdavRouter);
 
 const jellyfinRouter = createJellyfinRouter();
+app.use('/jellyfin/p/:code', jellyfinRouter);
 app.use('/jellyfin/u/:alias', jellyfinRouter);
 app.use('/jellyfin/:uuid/:encryptedPassword', jellyfinRouter);
 app.use('/jellyfin', jellyfinRouter);

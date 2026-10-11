@@ -30,6 +30,8 @@ import {
   type WatchScope,
 } from '../types.js';
 import { matchKeysFor } from '../canonical.js';
+import { bySpelling } from '../lookup.js';
+import { playedThrough } from '../local-provider.js';
 import type { ContentRef } from '../types.js';
 
 const logger = createLogger('playback-pull');
@@ -134,6 +136,13 @@ function episodeKeyOf(videoId: string): string {
   return `e|${videoId}`;
 }
 
+function watchedKeysOf(watched: z.infer<typeof StateWatchedSchema>): string[] {
+  return [
+    ...(watched.movies ?? []).map((id) => `m|${id}`),
+    ...(watched.episodes ?? []).map(episodeKeyOf),
+  ];
+}
+
 /** Null when no duration is known: a percentage alone is not a position. */
 function positionOf(
   item: z.infer<typeof StateItemSchema>,
@@ -178,7 +187,39 @@ function mayImport(
   return incomingAt > (existing.externalAt ?? 0);
 }
 
+/** Trackers hold a rounded percentage of their own runtime, not our position. */
+const SAME_PROGRESS_PERCENT = 2;
+
+function percentOf(positionMs: number, durationMs: number | null | undefined) {
+  return durationMs && durationMs > 0 ? (positionMs / durationMs) * 100 : null;
+}
+
 type MatchKeys = Map<string, string | null>;
+
+/**
+ * Our own rows of each key's item under its other spellings. A tracker can echo
+ * our report under its own id, which as the newer spelling takes the item over.
+ */
+async function ownSpellings(
+  scope: WatchScope,
+  keys: string[],
+  matches: MatchKeys,
+  db: DbDriver
+): Promise<(key: string) => WatchStateRow[]> {
+  const rows = await WatchStateRepository.getSpellings(
+    scope,
+    keys.flatMap((key) => [key, matches.get(key) ?? '']),
+    db
+  );
+  const spellings = bySpelling(rows.filter((row) => row.origin === 'local'));
+  return (key) => {
+    const match = matches.get(key);
+    return [
+      ...(spellings.get(key) ?? []),
+      ...(match ? (spellings.get(match) ?? []) : []),
+    ].filter((row) => row.itemKey !== key);
+  };
+}
 
 function matchedIdentityFrom(
   videoId: string,
@@ -377,7 +418,8 @@ async function importItems(
   items: z.infer<typeof StateItemSchema>[],
   now: number,
   db: DbDriver,
-  matches: MatchKeys
+  matches: MatchKeys,
+  watched: ReadonlySet<string>
 ): Promise<ImportResult> {
   if (!items.length) return { written: 0, skipped: 0, listed: [], rekeyed: [] };
 
@@ -387,6 +429,7 @@ async function importItems(
       : `m|${i.metaId}`
   );
   const existingRows = await WatchStateRepository.getMany(scope, keys, db);
+  const ownRows = await ownSpellings(scope, keys, matches, db);
 
   const rows: ImportRow[] = [];
   const listed: string[] = [];
@@ -396,6 +439,42 @@ async function importItems(
     const key = keys[i];
     const existing = existingRows.get(key);
     const at = atMs(item.at, now);
+
+    const position = positionOf(item, existing);
+    const finished =
+      !!position && playedThrough(position.positionMs, position.durationMs);
+    // A paused point never unwatches a title.
+    const played =
+      finished ||
+      item.played === true ||
+      !!existing?.played ||
+      watched.has(key);
+
+    const tooEarly =
+      !!position &&
+      position.durationMs > 0 &&
+      position.positionMs <
+        (position.durationMs *
+          Math.min(RESUME_MIN_PERCENT, appConfig.watchState.minResumePercent)) /
+          100;
+    const positionMs = finished || tooEarly ? 0 : (position?.positionMs ?? 0);
+    const progress = position
+      ? percentOf(position.positionMs, position.durationMs)
+      : null;
+    const sameAs = (row: WatchStateRow) => {
+      const held = percentOf(row.positionMs, row.durationMs);
+      return (
+        row.played === played &&
+        progress !== null &&
+        held !== null &&
+        Math.abs(held - progress) <= SAME_PROGRESS_PERCENT
+      );
+    };
+
+    if (ownRows(key).some((row) => !mayImport(row, at, now) || sameAs(row))) {
+      skipped++;
+      continue;
+    }
 
     if (!mayImport(existing, at, now)) {
       skipped++;
@@ -419,32 +498,16 @@ async function importItems(
       matches
     );
 
-    const position = positionOf(item, existing);
-    const played =
-      item.played === true ||
-      (!!position &&
-        position.durationMs > 0 &&
-        position.positionMs >=
-          (position.durationMs * appConfig.watchState.playedPercent) / 100);
-
-    if (!played && !position) {
+    if (item.played !== true && !position) {
       skipped++;
       if (existing) listed.push(key);
       continue;
     }
 
-    const tooEarly =
-      !!position &&
-      position.durationMs > 0 &&
-      position.positionMs <
-        (position.durationMs *
-          Math.min(RESUME_MIN_PERCENT, appConfig.watchState.minResumePercent)) /
-          100;
-
     rows.push({
       identity,
       values: WatchStateRepository.importValues(scope, identity, {
-        positionMs: played || tooEarly ? 0 : (position?.positionMs ?? 0),
+        positionMs,
         durationMs: position?.durationMs ?? 0,
         played,
         lastPlayedAt: at,
@@ -494,11 +557,9 @@ async function importWatched(
   }
   for (const row of nextUp) noteWatch(row.metaId, row.at);
 
-  const keys = [
-    ...movies.map((id) => `m|${id}`),
-    ...episodes.map(episodeKeyOf),
-  ];
+  const keys = watchedKeysOf(watched);
   const existingRows = await WatchStateRepository.getMany(scope, keys, db);
+  const ownRows = await ownSpellings(scope, keys, matches, db);
 
   const rows: ImportRow[] = [];
   const listed: string[] = [];
@@ -509,13 +570,16 @@ async function importWatched(
     identity: WatchIdentity,
     existing?: WatchStateRow
   ) => {
+    if (ownRows(key).some((row) => row.played || !mayImport(row, now, now))) {
+      skipped++;
+      return;
+    }
     const showAt = watchedAt.get(identity.baseId) ?? 0;
-    /* Already imported and already played; marking it seen is enough. */
+    /* Imported as played, or mid rewatch: marking it seen is enough. */
     if (
-      existing &&
-      existing.played &&
-      existing.origin === 'import' &&
-      existing.sinkId === sink.id
+      existing?.played &&
+      (existing.positionMs > 0 ||
+        (existing.origin === 'import' && existing.sinkId === sink.id))
     ) {
       listed.push(key);
       return;
@@ -607,7 +671,10 @@ function watchlistRef(
     : { kind: 'series', type: entry.type, baseId: entry.metaId };
 }
 
-/** A favourite toggled here inside the echo window, or set by another addon's watchlist, is left alone. */
+/**
+ * A favourite toggled here inside the echo window, or set by another addon's
+ * watchlist, is left alone; so is one set here under another spelling.
+ */
 async function importWatchlist(
   scope: WatchScope,
   sink: SinkRow,
@@ -626,23 +693,37 @@ async function importWatchlist(
       at: atMs(entry.at, now),
     };
   });
-  const existing = await WatchStateRepository.getMany(
-    scope,
-    identities.map((i) => i.identity.itemKey),
-    db
+  const keysOf = ({ identity }: (typeof identities)[number]) =>
+    identity.matchKey
+      ? [identity.itemKey, identity.matchKey]
+      : [identity.itemKey];
+  const spellings = bySpelling(
+    await WatchStateRepository.getSpellings(
+      scope,
+      identities.flatMap(keysOf),
+      db
+    )
   );
   const echoWindowMs = appConfig.watchState.echoWindowSeconds * 1000;
   const rows: typeof identities = [];
   const touched: string[] = [];
   for (const row of identities) {
-    const held = existing.get(row.identity.itemKey);
-    if (held?.favoriteSinkId === sink.id && held.favorite) {
-      touched.push(row.identity.itemKey);
+    const held = keysOf(row).flatMap((key) => spellings.get(key) ?? []);
+    const mine = held.find((h) => h.favorite && h.favoriteSinkId === sink.id);
+    if (mine) {
+      touched.push(mine.itemKey);
       continue;
     }
-    if (held?.favorite && held.favoriteSinkId) continue;
-    const toggledHere = held && !held.favoriteSinkId && held.favoriteAt != null;
-    if (toggledHere && now - held.favoriteAt! < echoWindowMs) continue;
+    if (held.some((h) => h.favorite && h.favoriteSinkId)) continue;
+    const toggledHere = held.some(
+      (h) =>
+        !h.favoriteSinkId &&
+        h.favoriteAt != null &&
+        now - h.favoriteAt < echoWindowMs
+    );
+    if (toggledHere) continue;
+    if (held.some((h) => h.favorite && h.itemKey !== row.identity.itemKey))
+      continue;
     rows.push(row);
   }
   await WatchStateRepository.upsertWatchlist(scope, sink.id, rows, now, db);
@@ -890,7 +971,8 @@ export async function pullSink(
       payload.items ?? [],
       now,
       tx,
-      matches
+      matches,
+      new Set(payload.watched ? watchedKeysOf(payload.watched) : [])
     );
     const imported = new Set(items.listed);
     await WatchStateRepository.setMatchKeys(scope, items.rekeyed, tx);
@@ -901,6 +983,13 @@ export async function pullSink(
       sink.id,
       now,
       'resume',
+      imported,
+      tx
+    );
+    removed += await WatchStateRepository.clearStaleRewatches(
+      scope,
+      sink.id,
+      now,
       imported,
       tx
     );

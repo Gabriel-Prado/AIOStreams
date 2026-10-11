@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -18,6 +20,9 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, FindWindowExW, FindWindowW, HWND_BOTTOM, HWND_MESSAGE,
@@ -323,6 +328,55 @@ pub fn open_external(url: &str) {
             std::ptr::null(),
             SW_SHOWNORMAL,
         );
+    }
+}
+
+pub fn choose_program(window: &Window, title: &str) -> Option<PathBuf> {
+    let (filter, title) = (wide("Programs\0*.exe\0"), wide(title));
+    let mut file = vec![0u16; 1024];
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: window.hwnd() as HWND,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: file.as_mut_ptr(),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    // SAFETY: the buffers outlive the call, which writes at most `nMaxFile` units.
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        return None;
+    }
+    let length = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+    Some(OsString::from_wide(&file[..length]).into())
+}
+
+pub fn choose_folder(window: &Window, title: &str) -> Option<PathBuf> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+    use windows::core::HSTRING;
+    // SAFETY: the web view has set up COM on this thread, where every call runs.
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(dialog.GetOptions().ok()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+            .ok()?;
+        dialog.SetTitle(&HSTRING::from(title)).ok()?;
+        dialog
+            .Show(Some(windows::Win32::Foundation::HWND(window.hwnd() as _)))
+            .ok()?;
+        let name = dialog
+            .GetResult()
+            .ok()?
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .ok()?;
+        let path = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as _));
+        path.map(PathBuf::from)
     }
 }
 

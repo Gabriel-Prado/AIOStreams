@@ -21,6 +21,18 @@ const logger = createLogger('watch-state');
 
 /** Items shorter than this never create a resume entry. */
 const RESUME_MIN_DURATION_MS = 90_000;
+
+export function playedThrough(
+  positionMs: number,
+  durationMs: number | undefined
+): boolean {
+  return (
+    !!durationMs &&
+    durationMs > 0 &&
+    positionMs >= (durationMs * appConfig.watchState.playedPercent) / 100
+  );
+}
+
 interface PendingProgress {
   scope: WatchScope;
   identity: WatchIdentity;
@@ -111,11 +123,12 @@ export class LocalWatchStateProvider implements WatchStateProvider {
       }
       case 'stop': {
         this.pending.delete(key);
-        return this.write(
-          scope,
-          event.identity,
-          await this.stopPatch(scope, event)
-        );
+        const patch = await this.stopPatch(scope, event);
+        if (!patch)
+          return WatchStateRepository.get(scope, event.identity.itemKey).then(
+            (row) => row ?? null
+          );
+        return this.write(scope, event.identity, patch);
       }
       case 'played':
         this.pending.delete(key);
@@ -139,6 +152,7 @@ export class LocalWatchStateProvider implements WatchStateProvider {
           snapshot: event.snapshot,
         });
       case 'unfavorite':
+        await this.unfavoriteSpellings(scope, event.identity);
         return this.write(scope, event.identity, {
           favorite: false,
           snapshot: event.snapshot,
@@ -155,6 +169,20 @@ export class LocalWatchStateProvider implements WatchStateProvider {
           likes: event.likes,
           snapshot: event.snapshot,
         });
+    }
+  }
+
+  /** Reads count a favourite under any spelling, so every one of them goes. */
+  private async unfavoriteSpellings(
+    scope: WatchScope,
+    identity: WatchIdentity
+  ) {
+    const keys = [identity.itemKey, identity.matchKey].filter(
+      (key): key is string => !!key
+    );
+    for (const row of await WatchStateRepository.getSpellings(scope, keys)) {
+      if (row.favorite && row.itemKey !== identity.itemKey)
+        await this.write(scope, row, { favorite: false });
     }
   }
 
@@ -230,23 +258,19 @@ export class LocalWatchStateProvider implements WatchStateProvider {
   }
 
   private progressPatch(p: PendingProgress): WatchStatePatch {
-    const dur = p.durationMs ?? 0;
-    if (
-      dur > 0 &&
-      p.positionMs >= (dur * appConfig.watchState.playedPercent) / 100
-    ) {
+    if (playedThrough(p.positionMs, p.durationMs)) {
       return {
         positionMs: 0,
-        durationMs: dur,
+        durationMs: p.durationMs,
         played: true,
         lastPlayedAt: p.at,
         snapshot: p.snapshot,
       };
     }
     /*
-     * `played` is absent rather than false: the upsert coalesces it, so leaving
-     * it out preserves what is stored. Clearing it is a decision, and only an
-     * explicit unplayed or a stop makes it.
+     * `played` is absent rather than false, here and on a stop: the upsert
+     * coalesces it, so a position on a played item is a rewatch under way.
+     * Only an explicit unplayed clears it.
      */
     return {
       positionMs: p.positionMs,
@@ -256,18 +280,20 @@ export class LocalWatchStateProvider implements WatchStateProvider {
     };
   }
 
+  /** Null for a late report older than what the item already holds. */
   private async stopPatch(
     scope: WatchScope,
     event: WatchProgressEvent
-  ): Promise<WatchStatePatch> {
+  ): Promise<WatchStatePatch | null> {
     const existing = await WatchStateRepository.get(
       scope,
       event.identity.itemKey
     );
+    if (event.at && (existing?.lastPlayedAt ?? 0) > event.at) return null;
     const dur = event.durationMs || existing?.durationMs || 0;
-    const pos = event.positionMs ?? existing?.positionMs ?? 0;
-    const now = Date.now();
-    if (dur > 0 && pos >= (dur * appConfig.watchState.playedPercent) / 100) {
+    const pos = event.positionMs ?? 0;
+    const now = event.at ?? Date.now();
+    if (playedThrough(pos, dur)) {
       return {
         positionMs: 0,
         durationMs: dur,
@@ -283,7 +309,6 @@ export class LocalWatchStateProvider implements WatchStateProvider {
     return {
       positionMs: tooShort || tooEarly ? 0 : pos,
       durationMs: dur || undefined,
-      played: false,
       lastPlayedAt: now,
       snapshot: event.snapshot,
     };

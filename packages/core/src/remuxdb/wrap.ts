@@ -1,14 +1,11 @@
 import type { ParsedStream, UserData } from '../db/schemas.js';
 import { resolveCrossProviderIds } from '../metadata/id-resolution.js';
 import type { StreamContext } from '../streams/context.js';
-import {
-  appConfig,
-  createLogger,
-  mergeParsedMediaInfos,
-  parseMediaInfo,
-} from '../utils/index.js';
-import { matchEntry, toWireMediaInfo } from './adapter.js';
+import { appConfig, createLogger, hasTrackLists } from '../utils/index.js';
+import { applyMediaInfo } from '../media-info/apply.js';
+import { fromRemuxDbVersion, matchEntry } from './adapter.js';
 import { fetchProbeVersions } from './client.js';
+import { queueRemuxDbMatch } from '../media-info/sources/remuxdb.js';
 import type { MediaProbeVersion } from './client.js';
 
 const logger = createLogger('remuxdb');
@@ -42,8 +39,28 @@ async function lookupVersions(
   return versions;
 }
 
+function versionsFor(context: StreamContext): Promise<MediaProbeVersion[]> {
+  let lookup = lookups.get(context);
+  if (!lookup) {
+    // Started before anything awaits it, so it must never reject.
+    lookup = lookupVersions(context).catch((error) => {
+      logger.debug(`remuxdb lookup failed: ${error}`);
+      return [];
+    });
+    lookups.set(context, lookup);
+  }
+  return lookup;
+}
+
 export function isRemuxDbEnabled(userData: UserData): boolean {
-  return appConfig.remuxdb.enabled && userData.remuxDb?.enabled === true;
+  return appConfig.remuxdb.enabled && userData.remuxDb?.enabled !== false;
+}
+
+export function startRemuxDbLookup(
+  context: StreamContext,
+  userData: UserData
+): void {
+  if (isRemuxDbEnabled(userData)) void versionsFor(context);
 }
 
 export async function resolveRemuxDbMediaInfo(
@@ -55,18 +72,11 @@ export async function resolveRemuxDbMediaInfo(
 
   try {
     const eligible = streams.filter(
-      (s) =>
-        (s.torrent?.infoHash || s.nzbUrl) &&
-        s.parsedFile?.mediaInfoQuality !== 'probe'
+      (s) => (s.torrent?.infoHash || s.nzbUrl) && !hasTrackLists(s.parsedFile)
     );
     if (eligible.length === 0) return;
 
-    let lookup = lookups.get(context);
-    if (!lookup) {
-      lookup = lookupVersions(context);
-      lookups.set(context, lookup);
-    }
-    const versions = await lookup;
+    const versions = await versionsFor(context);
     if (versions.length === 0) return;
 
     let matched = 0;
@@ -74,39 +84,8 @@ export async function resolveRemuxDbMediaInfo(
       const match = matchEntry(versions, stream);
       if (!match) continue;
       matched++;
-
-      const merged = mergeParsedMediaInfos(
-        stream.parsedFile,
-        parseMediaInfo(toWireMediaInfo(match))
-      );
-      if (!merged) continue;
-
-      stream.parsedFile = {
-        ...stream.parsedFile,
-        ...merged,
-        languages: merged.languages?.length
-          ? merged.languages
-          : (stream.parsedFile?.languages ?? []),
-        subtitles: merged.subtitles?.length
-          ? merged.subtitles
-          : (stream.parsedFile?.subtitles ?? []),
-        audioChannels: merged.audioChannels?.length
-          ? merged.audioChannels
-          : (stream.parsedFile?.audioChannels ?? []),
-        visualTags: merged.visualTags?.length
-          ? merged.visualTags
-          : (stream.parsedFile?.visualTags ?? []),
-        audioTags: merged.audioTags?.length
-          ? merged.audioTags
-          : (stream.parsedFile?.audioTags ?? []),
-        hasChapters: merged.hasChapters ?? stream.parsedFile?.hasChapters,
-      };
-      if (match.duration && !stream.duration) {
-        stream.duration = match.duration * 1000;
-      }
-      if (match.bitrate && !stream.bitrate) {
-        stream.bitrate = match.bitrate;
-      }
+      applyMediaInfo(stream, fromRemuxDbVersion(match));
+      queueRemuxDbMatch(stream, match);
     }
     logger.debug(`matched ${matched}/${eligible.length} eligible streams`);
   } catch (error) {
