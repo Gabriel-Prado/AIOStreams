@@ -1,10 +1,14 @@
+import { t } from '@lingui/core/macro';
+import { Trans } from '@lingui/react/macro';
 import React from 'react';
+import { useElementScrollRestoration, useRouter } from '@tanstack/react-router';
 import { LuChevronLeft, LuChevronRight } from 'react-icons/lu';
 import { Button, IconButton } from '@aiostreams/ui/button';
 import { Modal } from '@aiostreams/ui/modal';
 import { Skeleton } from '@aiostreams/ui/skeleton';
 import { LuffyError } from '@aiostreams/ui/shared/luffy-error';
 import { cn } from '@aiostreams/ui/core/styling';
+import { formatLocale } from '../lib/i18n';
 import { useSession } from '../lib/session';
 import { useCalendar } from '../lib/queries';
 import {
@@ -40,7 +44,7 @@ function parseMonth(month: string | undefined): Date {
 /** The locale's first day of the week, as `Date.getDay` numbers it; Monday where unknown. */
 function weekStart(): number {
   try {
-    const locale = new Intl.Locale(navigator.language) as Intl.Locale & {
+    const locale = new Intl.Locale(formatLocale()) as Intl.Locale & {
       getWeekInfo?(): { firstDay: number };
       weekInfo?: { firstDay: number };
     };
@@ -66,7 +70,7 @@ function gridDays(first: Date, startDay: number): Date[] {
 }
 
 function longDay(d: Date): string {
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString(formatLocale(), {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
@@ -243,7 +247,7 @@ function MonthGrid({
             key={d.getDay()}
             className="py-1 text-center text-xs font-semibold uppercase tracking-wide text-[--muted]"
           >
-            {d.toLocaleDateString(undefined, { weekday: 'short' })}
+            {d.toLocaleDateString(formatLocale(), { weekday: 'short' })}
           </div>
         ))}
       </div>
@@ -263,36 +267,81 @@ function MonthGrid({
   );
 }
 
+const START =
+  'scroll-mt-[calc(var(--top-bar,0px)+env(safe-area-inset-top)+1rem)]';
+
 function Agenda({
   days,
   month,
   byDay,
+  current,
 }: {
   days: Date[];
   month: number;
   byDay: Map<string, BaseItemDto[]>;
+  current: boolean;
 }) {
   const today = dayKey(new Date());
   const shown = days.filter(
     (d) => d.getMonth() === month && byDay.has(dayKey(d))
   );
+  const upcoming = shown.findIndex((d) => dayKey(d) >= today);
+  const at = upcoming === -1 ? shown.length : upcoming;
+  const airsToday = at < shown.length && dayKey(shown[at]) === today;
+  const start = React.useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const saved = useElementScrollRestoration({ getElement: () => window });
+  // A new visit opens at today; going back keeps the place left.
+  React.useEffect(() => {
+    if (!current || at === 0 || saved) return;
+    const go = () => start.current?.scrollIntoView({ block: 'start' });
+    if (router.state.status !== 'pending') return go();
+    // The router scrolls to the top once the page it is rendering shows.
+    const stop = router.subscribe('onRendered', () => {
+      stop();
+      go();
+    });
+    return stop;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const line = current && shown.length > 0 && !airsToday && (
+    <div
+      ref={start}
+      data-ui="calendar-today-line"
+      className={cn('flex items-center gap-2', START)}
+    >
+      <span className="rounded-full bg-brand-500 px-2.5 py-0.5 text-xs font-semibold text-white">
+        <Trans>Today</Trans>
+      </span>
+      <span className="h-px flex-1 bg-brand-500" />
+    </div>
+  );
   return (
     <div data-ui="calendar-agenda" className="space-y-5">
-      {shown.map((d) => (
-        <section key={dayKey(d)} className="space-y-2">
-          <h2
-            className={cn(
-              'text-sm font-semibold',
-              dayKey(d) === today ? 'text-white' : 'text-[--muted]'
-            )}
+      {shown.map((d, i) => (
+        <React.Fragment key={dayKey(d)}>
+          {i === at && line}
+          <section
+            ref={i === at && airsToday ? start : undefined}
+            data-today={dayKey(d) === today || undefined}
+            className={cn('space-y-2', START)}
           >
-            {longDay(d)}
-          </h2>
-          {byDay.get(dayKey(d))!.map((item) => (
-            <EpisodeRow key={item.Id} item={item} />
-          ))}
-        </section>
+            <h2
+              className={cn(
+                'text-sm font-semibold',
+                dayKey(d) === today ? 'text-white' : 'text-[--muted]'
+              )}
+            >
+              {longDay(d)}
+            </h2>
+            {byDay.get(dayKey(d))!.map((item) => (
+              <EpisodeRow key={item.Id} item={item} />
+            ))}
+          </section>
+        </React.Fragment>
       ))}
+      {at === shown.length && line}
     </div>
   );
 }
@@ -317,6 +366,7 @@ export function CalendarPage({ month }: { month?: string }) {
   const inMonth = days.some(
     (d) => d.getMonth() === first.getMonth() && byDay.has(dayKey(d))
   );
+  const current = monthKey(first) === monthKey(new Date());
   const go = (offset: number) =>
     navigate(
       to.calendar(
@@ -333,46 +383,52 @@ export function CalendarPage({ month }: { month?: string }) {
           className="flex flex-wrap items-center gap-x-4 gap-y-2"
         >
           <h1 data-ui="page-title" className="text-3xl font-bold">
-            Calendar
+            <Trans>Calendar</Trans>
           </h1>
-          <div className="flex items-center gap-1">
+          <div data-ui="calendar-nav" className="flex items-center gap-1">
             <IconButton
+              data-name="previous"
               size="sm"
               intent="gray-subtle"
               className="rounded-full"
-              icon={<LuChevronLeft />}
-              aria-label="Previous month"
+              icon={<LuChevronLeft className="rtl:-scale-x-100" />}
+              aria-label={t`Previous month`}
               onClick={() => go(-1)}
             />
             <IconButton
+              data-name="next"
               size="sm"
               intent="gray-subtle"
               className="rounded-full"
-              icon={<LuChevronRight />}
-              aria-label="Next month"
+              icon={<LuChevronRight className="rtl:-scale-x-100" />}
+              aria-label={t`Next month`}
               onClick={() => go(1)}
             />
-            <span className="ml-2 text-lg font-semibold">
-              {first.toLocaleDateString(undefined, {
+            <span
+              data-ui="calendar-month"
+              className="ms-2 text-lg font-semibold"
+            >
+              {first.toLocaleDateString(formatLocale(), {
                 month: 'long',
                 year: 'numeric',
               })}
             </span>
           </div>
-          {monthKey(first) !== monthKey(new Date()) && (
+          {!current && (
             <Button
+              data-ui="calendar-today"
               size="sm"
               intent="gray-outline"
               className="rounded-full"
               onClick={() => navigate(to.calendar(), { replace: true })}
             >
-              Today
+              <Trans>Today</Trans>
             </Button>
           )}
         </div>
 
         {calendar.isError ? (
-          <LuffyError title="Could not load the calendar" />
+          <LuffyError title={t`Could not load the calendar`} />
         ) : calendar.isLoading ? (
           <Skeleton className="h-[40rem] w-full rounded-xl" />
         ) : (
@@ -386,11 +442,19 @@ export function CalendarPage({ month }: { month?: string }) {
               />
             </div>
             <div className="md:hidden">
-              <Agenda days={days} month={first.getMonth()} byDay={byDay} />
+              <Agenda
+                key={monthKey(first)}
+                days={days}
+                month={first.getMonth()}
+                byDay={byDay}
+                current={current}
+              />
             </div>
             {!inMonth && (
               <p className="text-[--muted]">
-                Nothing airs this month from your shows or watchlist.
+                <Trans>
+                  Nothing airs this month from your shows or watchlist.
+                </Trans>
               </p>
             )}
           </>

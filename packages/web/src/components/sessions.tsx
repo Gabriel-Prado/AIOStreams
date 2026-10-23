@@ -1,3 +1,4 @@
+import { t } from '@lingui/core/macro';
 import { Badge } from '@aiostreams/ui/badge';
 import { useSession } from '../lib/session';
 import { landscapeUrls } from '../lib/images';
@@ -5,6 +6,7 @@ import { clock, itemTitle, ticksToMs } from '../lib/format';
 import { href, itemPath } from '../lib/paths';
 import { MediaRow } from './media-row';
 import { WideCard } from './cards';
+import { openRemote } from './remote-sheet';
 import type { SessionInfoDto } from '../lib/types';
 
 /** What is playing right now; only the configuration's own user is sent any. */
@@ -12,7 +14,7 @@ export function SessionsRow({ sessions }: { sessions: SessionInfoDto[] }) {
   const playing = sessions.filter((s) => s.NowPlayingItem);
   if (!playing.length) return null;
   return (
-    <MediaRow id="now-playing" title="Now playing" shape="wide">
+    <MediaRow id="now-playing" title={t`Now playing`} shape="wide">
       {playing.map((s) => (
         <SessionCard key={s.Id} session={s} />
       ))}
@@ -22,13 +24,17 @@ export function SessionsRow({ sessions }: { sessions: SessionInfoDto[] }) {
 
 function SessionCard({ session }: { session: SessionInfoDto }) {
   const { client } = useSession();
+  const remote =
+    session.SupportsRemoteControl &&
+    session.DeviceId?.toLowerCase() !== client.deviceId.toLowerCase();
   const item = session.NowPlayingItem!;
   const position = ticksToMs(session.PlayState?.PositionTicks);
   const runtime = ticksToMs(item.RunTimeTicks);
   const paused = session.PlayState?.IsPaused;
   return (
     <WideCard
-      href={href(itemPath(item))}
+      href={remote ? undefined : href(itemPath(item))}
+      onClick={remote ? () => openRemote({ device: session.Id! }) : undefined}
       image={(width) => landscapeUrls(client, item, { maxWidth: width })}
       title={itemTitle(item)}
       subtitle={[session.UserName, session.DeviceName || session.Client]
@@ -40,7 +46,7 @@ function SessionCard({ session }: { session: SessionInfoDto }) {
       progress={runtime ? (position / runtime) * 100 : null}
       badge={
         <Badge intent={paused ? 'gray-solid' : 'primary-solid'} size="sm">
-          {paused ? 'Paused' : 'Playing'}
+          {paused ? t`Paused` : t`Playing`}
         </Badge>
       }
     />

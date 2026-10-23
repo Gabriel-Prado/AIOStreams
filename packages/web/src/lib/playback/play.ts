@@ -1,3 +1,4 @@
+import { t } from '@lingui/core/macro';
 import { currentHost } from '../hosts';
 import { fullTitle, ticksToMs } from '../format';
 import { navigate, to } from '../paths';
@@ -10,6 +11,8 @@ import { storedMap } from '../storage';
 import { subtitleLanguages, usePlaybackPrefs } from '../user-config';
 import { useEpisodesAfter } from '../queries';
 import { sameLanguage } from '../languages';
+import { party } from '../party/party';
+import { usePlayForParty } from '../party/actions';
 import type { BaseItemDto, PlaybackInfoResponse, SourceInfo } from '../types';
 
 /** The version each item last played in, which resuming it goes straight to. */
@@ -18,21 +21,34 @@ export const lastVersions = storedMap<string>(
   500
 );
 
-/** Versions that can play; notices from addons carry text only. */
+/** Notices from addons carry text only. */
+export function isNotice(source: SourceInfo): boolean {
+  return source.Type === 'Placeholder';
+}
+
 export function playableSources(
   info: PlaybackInfoResponse | undefined
 ): SourceInfo[] {
-  return (info?.MediaSources ?? []).filter(
-    (s) => s.Type !== 'Placeholder'
-  ) as SourceInfo[];
+  return ((info?.MediaSources ?? []) as SourceInfo[]).filter(
+    (s) => !isNotice(s)
+  );
 }
 
-export function noticeSources(
-  info: PlaybackInfoResponse | undefined
-): SourceInfo[] {
-  return (info?.MediaSources ?? []).filter(
-    (s) => s.Type === 'Placeholder'
-  ) as SourceInfo[];
+/** Notices by the version each came after, `null` for those before them all. */
+export function placedNotices(
+  info: PlaybackInfoResponse | undefined,
+  versions: SourceInfo[]
+): Map<SourceInfo | null, SourceInfo[]> {
+  const placed = new Map<SourceInfo | null, SourceInfo[]>();
+  for (const notice of (info?.MediaSources ?? []) as SourceInfo[]) {
+    if (!isNotice(notice)) continue;
+    const at = notice.aiostreams?.index ?? Infinity;
+    const after =
+      versions.filter((v) => (v.aiostreams?.index ?? -Infinity) < at).pop() ??
+      null;
+    placed.set(after, [...(placed.get(after) ?? []), notice]);
+  }
+  return placed;
 }
 
 /** Enough to offer, few enough to keep the link short. */
@@ -74,10 +90,11 @@ function useOpenLink() {
   };
 }
 
-/** Plays an item on the player chosen for this device. */
+/** Plays an item on the player chosen for this device, or for the party it is in. */
 export function usePlay() {
   const openLink = useOpenLink();
   const episodesAfter = useEpisodesAfter();
+  const playForParty = usePlayForParty();
   const { prefs } = usePlaybackPrefs();
   return async (
     item: BaseItemDto,
@@ -89,9 +106,11 @@ export function usePlay() {
     }
   ) => {
     const { source } = opts;
-    if (!source.Id) throw new Error('No playable version was found');
+    if (!source.Id) throw new Error(t`No playable version was found`);
     const startMs =
       opts.startMs ?? ticksToMs(item.UserData?.PlaybackPositionTicks);
+    if (party.state()?.status === 'live')
+      return playForParty(item, source, startMs);
 
     const { play } = currentHost();
     if (play) {

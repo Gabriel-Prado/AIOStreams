@@ -1,8 +1,6 @@
 import React from 'react';
 import { currentHost } from '../lib/hosts';
-
-/** Jumps under way at once, which a held key's repeats reach. */
-const LAYERS = 3;
+import { GLIDE_LAYERS } from '../lib/input/glide';
 
 /** On TVs only. A layer holds anything `position: fixed` inside it to itself. */
 export function GlideLayers({
@@ -15,11 +13,10 @@ export function GlideLayers({
 }) {
   if (!currentHost().tv) return <>{children}</>;
   let inner = children;
-  for (let i = LAYERS - 1; i >= 0; i--)
+  for (let i = GLIDE_LAYERS - 1; i >= 0; i--)
     inner = (
       <div
-        data-glide-layer
-        data-glide-layers={i === 0 ? name : undefined}
+        data-glide-layer={i === 0 ? name : ''}
         // Kept as layers, since one made as a glide starts draws nothing for a frame.
         className="will-change-transform"
       >

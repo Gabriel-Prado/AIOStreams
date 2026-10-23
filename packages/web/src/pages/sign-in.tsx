@@ -1,4 +1,6 @@
 import React from 'react';
+import { t } from '@lingui/core/macro';
+import { Trans } from '@lingui/react/macro';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, LayoutGroup, motion, useAnimate } from 'motion/react';
 import { BiLockAlt } from 'react-icons/bi';
@@ -8,15 +10,30 @@ import { PasswordInput } from '@aiostreams/ui/password-input';
 import { cn } from '@aiostreams/ui/core/styling';
 import { LoadingOverlay, LoadingSpinner } from '@aiostreams/ui/loading-spinner';
 import { UserAvatar } from '../components/user-avatar';
-import { FocusRing } from '../components/cards';
 import { BrandLogo } from '../components/brand-logo';
-import type { JellyfinClient } from '../lib/client';
+import {
+  ConnectionError,
+  JellyfinError,
+  type JellyfinClient,
+} from '../lib/client';
+import { useAction } from '../lib/input';
 import { configureUrl } from '../lib/paths';
 import { useServerInfo } from '../lib/server-info';
 import type { PickableUser, QuickConnectResult, UserDto } from '../lib/types';
 
 /** Must match the server's `PIN_REQUIRED`. */
+// eslint-disable-next-line lingui/no-unlocalized-strings -- the server's word
 const PIN_REQUIRED = 'PIN required';
+
+/** Why signing in failed: the app's words where the status says, else the server's. */
+function signInError(err: unknown): string {
+  if (err instanceof JellyfinError && err.status === 401)
+    return t`That did not match. Try again.`;
+  if (err instanceof JellyfinError && err.status === 429)
+    return t`Too many tries. Wait a moment, then try again.`;
+  if (err instanceof ConnectionError) return t`Can't reach the server`;
+  return (err as Error | undefined)?.message || t`Sign in failed`;
+}
 
 export const SPRING = {
   type: 'spring',
@@ -138,29 +155,31 @@ function signInCopy(
 ) {
   if (personal)
     return pinSignIn
-      ? { help: 'Use your PIN.', username: 'User name', password: 'PIN' }
+      ? { help: t`Use your PIN.`, username: t`User name`, password: t`PIN` }
       : {
-          help: 'Use Quick Connect, or the configuration’s password.',
-          username: 'User name',
-          password: 'Password',
+          help: t`Use Quick Connect, or the configuration’s password.`,
+          username: t`User name`,
+          password: t`Password`,
         };
   if (!configSignIn)
     return {
-      help: user ? 'Enter your password.' : 'Use your user name and password.',
-      username: 'User name',
-      password: 'Password',
+      help: user
+        ? t`Enter your password.`
+        : t`Use your user name and password.`,
+      username: t`User name`,
+      password: t`Password`,
     };
   const help = user
     ? pinSignIn
-      ? 'Use your PIN, or the configuration’s password.'
-      : 'Use the configuration’s password.'
+      ? t`Use your PIN, or the configuration’s password.`
+      : t`Use the configuration’s password.`
     : pinSignIn
-      ? 'Use your user name and PIN, or the configuration’s UUID and its password.'
-      : 'Use your configuration’s UUID or alias and its password.';
+      ? t`Use your user name and PIN, or the configuration’s UUID and its password.`
+      : t`Use your configuration’s UUID or alias and its password.`;
   return {
     help,
-    username: pinSignIn ? 'User or UUID' : 'UUID or alias',
-    password: pinSignIn ? 'PIN or password' : 'Password',
+    username: pinSignIn ? t`User or UUID` : t`UUID or alias`,
+    password: pinSignIn ? t`PIN or password` : t`Password`,
   };
 }
 
@@ -201,12 +220,11 @@ export function SignInPage({
         pin === null ? password : `${password}/${pin}`
       );
     } catch (err) {
-      const message = (err as Error).message;
-      if (message === PIN_REQUIRED) {
-        setError(pin ? 'That did not match. Try again.' : null);
+      if ((err as Error).message === PIN_REQUIRED) {
+        setError(pin ? t`That did not match. Try again.` : null);
         setPin('');
       } else {
-        setError(message || 'Sign in failed');
+        setError(signInError(err));
       }
       shake();
     } finally {
@@ -232,7 +250,7 @@ export function SignInPage({
               />
             )}
             <h1 data-ui="page-title" className="text-xl font-semibold">
-              {user ? user.Name : 'Sign in'}
+              {user ? user.Name : t`Sign in`}
             </h1>
             <p className="text-sm text-[--muted]">{copy.help}</p>
           </div>
@@ -267,8 +285,8 @@ export function SignInPage({
                 className="overflow-hidden"
               >
                 <TextInput
-                  label="PIN"
-                  help="This user has a PIN."
+                  label={t`PIN`}
+                  help={t`This user has a PIN.`}
                   type="password"
                   inputMode="numeric"
                   autoComplete="off"
@@ -288,13 +306,13 @@ export function SignInPage({
             className="w-full rounded-full"
             loading={busy}
           >
-            Sign in
+            <Trans>Sign in</Trans>
           </Button>
           <LinkRow
             links={[
               ...links,
               !!onChangeServer && {
-                label: 'Change server',
+                label: t`Change server`,
                 onClick: onChangeServer,
               },
             ]}
@@ -323,22 +341,24 @@ export function Unreachable({
         className={cn(AUTH_CARD, 'text-center')}
       >
         <h1 data-ui="page-title" className="text-xl font-semibold">
-          Can’t reach the server
+          <Trans>Can’t reach the server</Trans>
         </h1>
         <p className="text-sm text-[--muted] [overflow-wrap:anywhere]">
-          {address} did not answer. Check that it is running, then try again.
+          <Trans>
+            {address} did not answer. Check that it is running, then try again.
+          </Trans>
         </p>
         <Button
           intent="white"
           className="w-full rounded-full"
           onClick={onRetry}
         >
-          Try again
+          <Trans>Try again</Trans>
         </Button>
         <LinkRow
           links={[
             !!onChangeServer && {
-              label: 'Change server',
+              label: t`Change server`,
               onClick: onChangeServer,
             },
           ]}
@@ -362,6 +382,11 @@ export function publicAvatar(
 }
 
 const QUICK_CONNECT_POLL_MS = 3000;
+
+function quickConnectError(error: Error): string {
+  const { message } = error;
+  return t`Quick Connect is unavailable: ${message}`;
+}
 
 /** Signing in with a code that an app already signed in to the server approves. */
 function QuickConnectPage({
@@ -398,9 +423,7 @@ function QuickConnectPage({
 
   React.useEffect(() => {
     if (!approved || !secret) return;
-    onApproved(secret).catch((e: Error) =>
-      setError(e.message || 'Sign in failed')
-    );
+    onApproved(secret).catch((e: unknown) => setError(signInError(e)));
   }, [approved, secret, onApproved]);
 
   return (
@@ -411,16 +434,19 @@ function QuickConnectPage({
         className={cn(AUTH_CARD, 'text-center')}
       >
         <h1 data-ui="page-title" className="text-xl font-semibold">
-          Quick Connect
+          <Trans>Quick Connect</Trans>
         </h1>
         <p className="text-sm text-[--muted]">
           {configureUrl(client.base, info)
-            ? 'Enter this code under Quick Connect in an app already signed in, or approve it on the configuration page.'
-            : 'Enter this code under Quick Connect in an app already signed in to this server.'}
+            ? t`Enter this code under Quick Connect in an app already signed in, or approve it on the configuration page.`
+            : t`Enter this code under Quick Connect in an app already signed in to this server.`}
         </p>
         <div className="flex h-14 items-center justify-center">
           {request.data ? (
-            <span className="select-all font-mono text-4xl font-semibold tracking-[0.3em]">
+            <span
+              data-ui="quick-connect-code"
+              className="select-all font-mono text-4xl font-semibold tracking-[0.3em]"
+            >
               {request.data.Code}
             </span>
           ) : (
@@ -430,18 +456,15 @@ function QuickConnectPage({
         {request.data && !error && (
           <p className="text-sm text-[--muted]">
             {expired
-              ? 'This code has expired.'
+              ? t`This code has expired.`
               : approved
-                ? 'Approved. Signing in\u2026'
-                : 'Waiting for approval\u2026'}
+                ? t`Approved. Signing in…`
+                : t`Waiting for approval…`}
           </p>
         )}
         <ErrorLine
           error={
-            error ??
-            (request.isError
-              ? `Quick Connect is unavailable: ${request.error.message}`
-              : null)
+            error ?? (request.isError ? quickConnectError(request.error) : null)
           }
         />
         {(expired || request.isError || error) && (
@@ -453,10 +476,10 @@ function QuickConnectPage({
               setAttempt((n) => n + 1);
             }}
           >
-            New code
+            <Trans>New code</Trans>
           </Button>
         )}
-        <LinkRow links={[{ label: 'Back', onClick: onBack }]} />
+        <LinkRow links={[{ label: t`Back`, onClick: onBack }]} />
       </motion.div>
     </Screen>
   );
@@ -511,7 +534,7 @@ export function SignInScreen({
     ? null
     : (chosen ?? (personal && users.length === 1 ? users[0] : null));
   const quickConnectLinks: SignInLink[] = quickConnectEnabled.data
-    ? [{ label: 'Quick Connect', onClick: () => setQuickConnect(true) }]
+    ? [{ label: t`Quick Connect`, onClick: () => setQuickConnect(true) }]
     : [];
 
   if (users.length && !user && !typing) {
@@ -520,7 +543,6 @@ export function SignInScreen({
         users={users.map((u) => ({
           user: u,
           avatar: publicAvatar(client, u),
-          hidden: false,
           needs: null,
         }))}
         onPick={async (id) => {
@@ -531,7 +553,7 @@ export function SignInScreen({
         links={[
           ...(personal
             ? []
-            : [{ label: 'Other user', onClick: () => setTyping(true) }]),
+            : [{ label: t`Other user`, onClick: () => setTyping(true) }]),
           ...quickConnectLinks,
         ]}
         onChangeServer={onChangeServer}
@@ -542,7 +564,7 @@ export function SignInScreen({
     users.length && !personal
       ? [
           {
-            label: 'Back',
+            label: t`Back`,
             onClick: () => {
               setChosen(null);
               setTyping(false);
@@ -604,6 +626,7 @@ function SecretPrompt({
   const [password, setPassword] = React.useState('');
   const [pin, setPin] = React.useState('');
   const [scope, shake] = useShake<HTMLDivElement>();
+  useAction('back', onBack);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -634,8 +657,8 @@ function SecretPrompt({
         <div ref={scope} className="w-full space-y-3">
           {askPassword && (
             <PasswordInput
-              label="Configuration password"
-              help="Needed to switch to this user."
+              label={t`Configuration password`}
+              help={t`Needed to switch to this user.`}
               autoFocus
               value={password}
               onValueChange={setPassword}
@@ -643,7 +666,7 @@ function SecretPrompt({
           )}
           {askPin && (
             <TextInput
-              label="PIN"
+              label={t`PIN`}
               type="password"
               inputMode="numeric"
               autoComplete="off"
@@ -661,9 +684,9 @@ function SecretPrompt({
           loading={busy}
           disabled={(askPassword && !password) || (askPin && pin.length < 4)}
         >
-          Continue
+          <Trans>Continue</Trans>
         </Button>
-        <LinkRow links={[{ label: 'Back', onClick: onBack }]} />
+        <LinkRow links={[{ label: t`Back`, onClick: onBack }]} />
       </motion.div>
     </form>
   );
@@ -687,6 +710,8 @@ export function UserPicker({
   const [asking, setAsking] = React.useState<PickableUser | null>(
     users.length === 1 && users[0].needs ? users[0] : null
   );
+  // Back from a prompt returns focus to the user it was for.
+  const left = React.useRef<string | null>(null);
 
   const pick = async (userId: string, secret?: string) => {
     setBusy(userId);
@@ -695,9 +720,7 @@ export function UserPicker({
       await onPick(userId, secret);
       return true;
     } catch (err) {
-      setError(
-        secret ? 'That did not match. Try again.' : (err as Error).message
-      );
+      setError(secret ? t`That did not match. Try again.` : signInError(err));
       setBusy(null);
       return false;
     }
@@ -723,6 +746,7 @@ export function UserPicker({
                   error={error}
                   onSubmit={(secret) => pick(asking.user.Id!, secret)}
                   onBack={() => {
+                    left.current = asking.user.Id!;
                     setAsking(null);
                     setError(null);
                   }}
@@ -734,7 +758,7 @@ export function UserPicker({
                   className="text-center text-2xl font-semibold"
                   {...RISE}
                 >
-                  Who&apos;s watching?
+                  <Trans>Who&apos;s watching?</Trans>
                 </motion.h1>
                 <motion.div
                   data-ui="user-picker"
@@ -748,6 +772,11 @@ export function UserPicker({
                   {users.map((u) => (
                     <motion.button
                       key={u.user.Id}
+                      ref={(el) => {
+                        if (!el || left.current !== u.user.Id) return;
+                        left.current = null;
+                        el.focus({ preventScroll: true });
+                      }}
                       type="button"
                       disabled={!!busy}
                       onClick={() => choose(u)}
@@ -764,11 +793,13 @@ export function UserPicker({
                       <span
                         className={cn(
                           'flex w-full flex-col items-center gap-3 transition-opacity',
-                          u.hidden && 'opacity-60',
                           busy && busy !== u.user.Id && 'opacity-40'
                         )}
                       >
-                        <span className="relative rounded-full transition-transform group-focus-visible/user:scale-110">
+                        <span
+                          data-focus-frame
+                          className="relative rounded-full transition-transform group-focus-visible/user:scale-110"
+                        >
                           <SharedAvatar
                             user={u}
                             className={cn(
@@ -777,11 +808,10 @@ export function UserPicker({
                                 'animate-pulse ring-brand-400'
                             )}
                           />
-                          <FocusRing className="group-focus-visible/user:opacity-100" />
                           {(u.needs === 'pin' ||
                             u.needs === 'password-pin') && (
-                            <span className="absolute bottom-0 right-0 flex size-7 items-center justify-center rounded-full bg-gray-900 text-sm ring-2 ring-[--background]">
-                              <BiLockAlt aria-label="Has a PIN" />
+                            <span className="absolute bottom-0 end-0 flex size-7 items-center justify-center rounded-full bg-gray-900 text-sm ring-2 ring-[--background]">
+                              <BiLockAlt aria-label={t`Has a PIN`} />
                             </span>
                           )}
                         </span>
@@ -797,7 +827,7 @@ export function UserPicker({
                   links={[
                     ...links,
                     !!onChangeServer && {
-                      label: 'Change server',
+                      label: t`Change server`,
                       onClick: onChangeServer,
                     },
                   ]}

@@ -1,13 +1,77 @@
+import { t } from '@lingui/core/macro';
+import React from 'react';
 import type { HostEvent } from '../../downloads/types';
+import type { TimeRange } from '../../playback/playhead';
+import type { Span } from '../../subtitles/align';
+
+/** A track as the app's player lists it; `url` is where an added one came from. */
+export interface AppTrack {
+  id: string;
+  type: 'audio' | 'subtitle';
+  title?: string;
+  language?: string;
+  codec?: string;
+  default: boolean;
+  forced: boolean;
+  hearingImpaired: boolean;
+  visualImpaired: boolean;
+  external: boolean;
+  url?: string;
+}
+
+/** What draws the video in the Mac app. */
+export type VideoOutput = 'mpv' | 'system' | 'compatibility';
 
 /** `external` marks what the player in its own window sends. */
 export type ShellMessage =
-  | { type: 'mpv-prop'; name: string; data: unknown; external?: boolean }
-  | { type: 'mpv-event'; name: string; external?: boolean }
+  | { type: 'youtube-resolved'; request: string; url: string | null }
   | {
-      type: 'mpv-ended';
+      type: 'player-state';
+      positionMs?: number;
+      durationMs?: number;
+      buffered?: TimeRange[];
+      paused?: boolean;
+      buffering?: boolean;
+      seeking?: boolean;
+      idle?: boolean;
+      volume?: number;
+      maxVolume?: number;
+      muted?: boolean;
+      speed?: number;
+      audio?: string | null;
+      subtitle?: string | null;
+      fullscreen?: boolean;
+      passthrough?: boolean;
+      external?: boolean;
+    }
+  | { type: 'player-tracks'; tracks: AppTrack[]; external?: boolean }
+  /** When lines of the file's subtitle asked for with `player-subtitle-lines` show. */
+  | { type: 'player-subtitle-lines'; track: string; lines: Span[] }
+  /** Answers `player-subtitle-index`: each of the file's own subtitles' lines by track, or null without an index. */
+  | { type: 'player-subtitle-index'; tracks: Record<string, Span[]> | null }
+  /** Where the app serves the JPEG of a keyframe asked for with `player-thumbnail`; without `src` the file has none. */
+  | {
+      type: 'player-thumbnail';
+      url: string;
+      positionMs?: number;
+      src: string | null;
+    }
+  | {
+      type: 'player-chapters';
+      chapters: { title?: string; startMs: number }[];
+      external?: boolean;
+    }
+  | {
+      type: 'player-event';
+      name: 'start' | 'loaded' | 'restart';
+      external?: boolean;
+    }
+  | {
+      type: 'player-ended';
       reason: string;
       error: string | null;
+      /** The HTTP status a failed load answered with. */
+      status?: number;
       cause?: string;
       external?: boolean;
     }
@@ -16,6 +80,11 @@ export type ShellMessage =
       players: { id: string; path: string | null }[];
     }
   | { type: 'external-ended'; error: string | null }
+  /** mpv's outputs on the desktop, as its `audio-device-list`. */
+  | {
+      type: 'audio-devices';
+      devices: { name: string; description: string }[] | null;
+    }
   | { type: 'fullscreen'; value: boolean }
   | { type: 'pip'; value: boolean }
   | { type: 'back' }
@@ -39,8 +108,25 @@ export type ShellMessage =
       ffmpeg: string | null;
       /** The Android app's player and its version. */
       player?: string;
+      /** Whether the app can re-encode sound to Dolby Digital. */
+      ac3Encoder?: boolean;
+    }
+  | {
+      type: 'video-output';
+      /** Empty where the app has no choice. */
+      outputs: VideoOutput[];
+      running: VideoOutput;
+      chosen: VideoOutput;
     }
   | { type: 'diagnostics'; text: string }
+  /** Empty when the last run ended normally or was already shown. */
+  | {
+      type: 'crash-report';
+      at?: number;
+      summary?: string;
+      details?: string;
+      page?: boolean;
+    }
   | {
       type: 'update-state';
       state: 'checking' | 'downloading' | 'ready' | 'current' | 'error' | 'off';
@@ -54,7 +140,12 @@ export type ShellMessage =
       message: string | null;
     }
   | { type: 'link'; url: string }
-  | { type: 'voice-result'; text: string | null }
+  | { type: 'voice-hearing'; level?: number; text: string | null }
+  | {
+      type: 'voice-result';
+      text: string | null;
+      error?: 'no-speech' | 'failed';
+    }
   | { type: 'gamepads'; connected: boolean }
   | { type: 'media-key'; key: MediaKey }
   | { type: 'error'; message: string }
@@ -107,4 +198,66 @@ declare global {
 
 export function appBridge(): ShellBridge | undefined {
   return window.aiostreamsApp;
+}
+
+export type ShellAnswer<T extends ShellMessage['type']> = Extract<
+  ShellMessage,
+  { type: T }
+>;
+
+/** Sends `message` and resolves with the first `answer` it gets. */
+export function ask<T extends ShellMessage['type']>(
+  message: { type: string; [key: string]: unknown },
+  answer: T,
+  opts: {
+    timeoutMs?: number;
+    matches?: (m: ShellAnswer<T>) => boolean;
+    /** Fails on the next `error` the app sends, which only some requests answer with. */
+    errors?: boolean;
+  } = {}
+): Promise<ShellAnswer<T>> {
+  const bridge = appBridge();
+  if (!bridge) return Promise.reject(new Error('Only the apps answer this'));
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      clearTimeout(timer);
+      stop();
+    };
+    const timer =
+      opts.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            done();
+            reject(new Error(t`The app did not answer`));
+          }, opts.timeoutMs);
+    const stop = bridge.subscribe((m) => {
+      if (m.type === 'error' && opts.errors) {
+        done();
+        reject(new Error(m.message));
+      } else if (m.type === answer && (opts.matches?.(m as never) ?? true)) {
+        done();
+        resolve(m as ShellAnswer<T>);
+      }
+    });
+    bridge.send(message);
+  });
+}
+
+/** The last `type` message the app sent, for a page that opens after it came. */
+export function bridgeStore<T extends ShellMessage['type']>(type: T) {
+  let last: ShellAnswer<T> | null = null;
+  const listeners = new Set<() => void>();
+  appBridge()?.subscribe((m) => {
+    if (m.type !== type) return;
+    last = m as ShellAnswer<T>;
+    for (const listener of listeners) listener();
+  });
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    return () => void listeners.delete(listener);
+  };
+  return {
+    get: () => last,
+    use: () => React.useSyncExternalStore(subscribe, () => last),
+  };
 }

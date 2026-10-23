@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
@@ -34,7 +35,11 @@ import okhttp3.Request
  * build sits on one release that every build replaces, with an `update.json`
  * naming the APK for each kind of processor. Installing asks the user.
  */
-class Updater(private val activity: ComponentActivity, private val send: (JsonObject) -> Unit) {
+class Updater(
+    private val activity: ComponentActivity,
+    private val beforeInstall: (then: () -> Unit) -> Unit,
+    private val send: (JsonObject) -> Unit,
+) {
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "updates") }
     private val main = Handler(Looper.getMainLooper())
     private val client = OkHttpClient()
@@ -65,7 +70,9 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
                 else -> {
                     val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "status $status"
                     Log.w(TAG, "install failed: $message")
-                    worker.execute { report("error", ready?.version, "The install failed: $message") }
+                    worker.execute {
+                        report("error", ready?.version, activity.getString(R.string.update_install_failed, message))
+                    }
                 }
             }
         }
@@ -83,7 +90,7 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
     fun handle(type: String, message: JsonObject): Boolean {
         when (type) {
             "update-check" -> check(message["channel"]?.jsonPrimitive?.contentOrNull)
-            "update-apply" -> worker.execute { apply() }
+            "update-apply" -> beforeInstall { worker.execute { apply() } }
             else -> return false
         }
         return true
@@ -120,7 +127,7 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
             if (update["versionCode"]!!.jsonPrimitive.long <= BuildConfig.VERSION_CODE) return@execute report("current")
             val apks = update["apks"]!!.jsonObject
             val abi = Build.SUPPORTED_ABIS.firstOrNull { it in apks }
-                ?: return@execute report("error", error = "No build for this device's processor")
+                ?: return@execute report("error", error = activity.getString(R.string.update_no_build))
             val apk = apks[abi]!!.jsonObject
             val name = apk["name"]!!.jsonPrimitive.content
             report("downloading", version)
@@ -128,7 +135,7 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
             fetch("$feed/$name").use { response -> file.outputStream().use { response.body.byteStream().copyTo(it) } }
             if (sha256(file) != apk["sha256"]!!.jsonPrimitive.content) {
                 file.delete()
-                return@execute report("error", error = "The download was damaged")
+                return@execute report("error", error = activity.getString(R.string.update_damaged))
             }
             ready = Ready(file, version)
             report("ready", version)
@@ -155,6 +162,8 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
             val installer = activity.packageManager.packageInstaller
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
                 setAppPackageName(activity.packageName)
+                // The default, internal storage only, refuses to update an app on an SD card used as internal storage.
+                setInstallLocation(PackageInfo.INSTALL_LOCATION_AUTO)
                 // Once this app installed itself, Android lets it update without asking.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
@@ -175,14 +184,14 @@ class Updater(private val activity: ComponentActivity, private val send: (JsonOb
             }
         } catch (e: Exception) {
             Log.w(TAG, "install", e)
-            report("error", update.version, "The install failed: ${e.message}")
+            report("error", update.version, activity.getString(R.string.update_install_failed, e.message))
         }
     }
 
     private fun fetch(url: String) = client.newCall(Request.Builder().url(url).build()).execute().also {
         if (!it.isSuccessful) {
             it.close()
-            error("The feed answered ${it.code}")
+            error(activity.getString(R.string.update_feed_answered, it.code))
         }
     }
 

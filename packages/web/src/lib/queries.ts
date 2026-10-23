@@ -1,3 +1,4 @@
+import { t } from '@lingui/core/macro';
 import React from 'react';
 import {
   keepPreviousData,
@@ -9,11 +10,12 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import type { JellyfinClient } from './client';
+import type { JellyfinClient, Purpose } from './client';
 import { useSession } from './session';
 import { useFeature } from './server-info';
 import { settings, useSetting } from './settings';
-import { episodeMarks, ticksToMs, unavailableLabel } from './format';
+import { episodeMarks, ticksToMs, unavailableKind } from './format';
+import { playerSupport } from './playback/player-choice';
 import type {
   BaseItemDto,
   BaseItemDtoQueryResult,
@@ -22,6 +24,7 @@ import type {
   MediaSegmentDtoQueryResult,
   PickableUser,
   PlaybackInfoResponse,
+  SearchHintResult,
   SessionInfoDto,
   SourceInfo,
   WebActivity,
@@ -63,6 +66,7 @@ export function useViews() {
 
 /** What a library holds by its type; one without a type holds both. */
 export function libraryTypes(view: BaseItemDto): string {
+  /* eslint-disable lingui/no-unlocalized-strings -- Jellyfin's item types */
   switch (view.CollectionType) {
     case 'movies':
       return 'Movie';
@@ -73,6 +77,7 @@ export function libraryTypes(view: BaseItemDto): string {
     default:
       return 'Movie,Series';
   }
+  /* eslint-enable lingui/no-unlocalized-strings */
 }
 
 export function useResume() {
@@ -101,6 +106,30 @@ export function useNextUp() {
         EnableResumable: false,
       }),
   });
+}
+
+/** When a title was last watched; for a next episode, when its show was. */
+export function watchedAt(item: BaseItemDto): number {
+  const show = (item as { aiostreams?: { showWatchedAt?: unknown } }).aiostreams
+    ?.showWatchedAt;
+  const at = typeof show === 'string' ? show : item.UserData?.LastPlayedDate;
+  return (at && Date.parse(at)) || 0;
+}
+
+/** Most recently watched first; next episodes without times stay after resume points. */
+export function mergeRows(
+  resume: BaseItemDto[] | null | undefined,
+  nextUp: BaseItemDto[] | null | undefined
+): BaseItemDto[] {
+  const seen = new Set<string>();
+  return [...(resume ?? []), ...(nextUp ?? [])]
+    .filter((item) => {
+      const keys = [item.Id, item.SeriesId].filter((k): k is string => !!k);
+      if (keys.some((k) => seen.has(k))) return false;
+      keys.forEach((k) => seen.add(k));
+      return true;
+    })
+    .sort((a, b) => watchedAt(b) - watchedAt(a));
 }
 
 export type ItemFilter = 'unplayed' | 'played' | 'favorite';
@@ -320,7 +349,29 @@ export function useSearch(
   });
 }
 
+export function useSearchSuggestions(
+  term: string,
+  limit: number,
+  enabled = true
+) {
+  const { client, user } = useSession();
+  return useQuery({
+    queryKey: [...useKey(), 'search-suggestions', term, limit],
+    queryFn: () =>
+      client.get<SearchHintResult>('/Search/Hints', {
+        userId: user.Id,
+        SearchTerm: term,
+        IncludeItemTypes: 'Movie,Series',
+        Limit: limit,
+      }),
+    enabled: enabled && term.length >= 2,
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
 /** What the item pages show beyond a row's fields. Jellyfin builds `ExternalUrls` from `ProviderIds`. */
+/* eslint-disable lingui/no-unlocalized-strings -- Jellyfin's field names */
 const DETAIL_FIELDS = [
   'AirTime',
   'ExternalUrls',
@@ -334,6 +385,7 @@ const DETAIL_FIELDS = [
   'Studios',
   'Taglines',
 ].join(',');
+/* eslint-enable lingui/no-unlocalized-strings */
 
 /**
  * Looked up by id, not at `/Items/{id}`, which always carries the versions and
@@ -342,15 +394,16 @@ const DETAIL_FIELDS = [
 export async function requestItem(
   client: JellyfinClient,
   userId: string,
-  itemId: string
+  itemId: string,
+  signal?: AbortSignal
 ): Promise<BaseItemDto> {
-  const { Items } = await client.get<BaseItemDtoQueryResult>('/Items', {
-    userId,
-    Ids: itemId,
-    Fields: DETAIL_FIELDS,
-  });
+  const { Items } = await client.get<BaseItemDtoQueryResult>(
+    '/Items',
+    { userId, Ids: itemId, Fields: DETAIL_FIELDS },
+    signal
+  );
   const item = Items?.[0];
-  if (!item) throw new Error('This item was not found');
+  if (!item) throw new Error(t`This item was not found`);
   return item;
 }
 
@@ -384,6 +437,24 @@ function listedItem(
  * With `page`, for the title's page: a list already loaded that shows the item
  * stands in until it arrives, and it is asked for as the page starts to draw.
  */
+function useItemOptions() {
+  const { client, user } = useSession();
+  const key = useKey();
+  return (itemId: string) =>
+    queryOptions({
+      queryKey: [...key, 'item', itemId],
+      meta: { cache: 'titles' },
+      // Dropped once nothing shows it, as the hero asks for each card it passes.
+      queryFn: ({ signal }) => requestItem(client, user.Id!, itemId, signal),
+    });
+}
+
+export function useFetchItem() {
+  const queryClient = useQueryClient();
+  const options = useItemOptions();
+  return (itemId: string) => queryClient.fetchQuery(options(itemId));
+}
+
 export function useItem(itemId: string, opts: { page?: boolean } = {}) {
   const { client, user } = useSession();
   const queryClient = useQueryClient();
@@ -394,11 +465,7 @@ export function useItem(itemId: string, opts: { page?: boolean } = {}) {
         : undefined,
     [opts.page, queryClient, client.base, user.Id, itemId]
   );
-  const options = queryOptions({
-    queryKey: [...useKey(), 'item', itemId],
-    meta: { cache: 'titles' },
-    queryFn: () => requestItem(client, user.Id!, itemId),
-  });
+  const options = useItemOptions()(itemId);
   if (opts.page && itemId && !queryClient.getQueryState(options.queryKey))
     void queryClient.prefetchQuery(options);
   return useQuery({ ...options, placeholderData: listed, enabled: !!itemId });
@@ -458,10 +525,11 @@ export function useNextUpFor(seriesId: string, enabled: boolean) {
 }
 
 /** Waits for the episode a show continues with, sharing a request already on its way. */
-export function useNextUpLater(seriesId: string) {
+export function useFetchNextUp() {
   const queryClient = useQueryClient();
-  const nextUp = useShowOptions().nextUp(seriesId);
-  return () => queryClient.fetchQuery(nextUp).then((res) => res.Items?.[0]);
+  const show = useShowOptions();
+  return (seriesId: string) =>
+    queryClient.fetchQuery(show.nextUp(seriesId)).then((res) => res.Items?.[0]);
 }
 
 /** The season a show's page opens on: the first with something left, skipping specials. */
@@ -531,62 +599,105 @@ export async function requestPlaybackInfo(
   client: JellyfinClient,
   userId: string,
   itemId: string,
-  opts: { refresh?: boolean; sourceId?: string; profile?: object } = {}
+  opts: {
+    refresh?: boolean;
+    sourceId?: string;
+    profile?: object;
+    /** The list the server kept, however old. */
+    kept?: boolean;
+    /** What the versions may need; the chosen player's by default. */
+    support?: { headers: boolean; youtube: boolean };
+    purpose?: Purpose;
+  } = {}
 ): Promise<PlaybackInfoResponse> {
+  const support = opts.support ?? playerSupport();
   const info = await client.post<PlaybackInfoResponse>(
     `/Items/${itemId}/PlaybackInfo`,
     {
       UserId: userId,
       DeviceProfile: opts.profile ?? DEVICE_PROFILE,
-      ...(opts.sourceId ? { MediaSourceId: opts.sourceId } : { Fresh: true }),
+      ...(opts.sourceId
+        ? { MediaSourceId: opts.sourceId }
+        : !opts.kept && { Fresh: true }),
       ...(opts.refresh && { Refresh: true }),
+      ...(support.headers && { EnableRequiredHttpHeaders: true }),
+      ...(support.youtube && { EnableYouTube: true }),
     },
-    { userId }
+    { userId },
+    opts.purpose
   );
   return { ...info, MediaSources: info.MediaSources?.map(withOwnId) };
 }
 
 function usePlaybackInfoRequest() {
   const { client, user } = useSession();
-  return (itemId: string, refresh = false, sourceId?: string) =>
-    requestPlaybackInfo(client, user.Id!, itemId, { refresh, sourceId });
+  return (
+    itemId: string,
+    opts: {
+      refresh?: boolean;
+      sourceId?: string;
+      kept?: boolean;
+      purpose?: Purpose;
+    } = {}
+  ) => requestPlaybackInfo(client, user.Id!, itemId, opts);
 }
 
 export function usePlaybackInfoOptions() {
   const request = usePlaybackInfoRequest();
   const key = useKey();
-  return (itemId: string, sourceId?: string) =>
+  return (itemId: string, sourceId?: string, purpose?: Purpose) =>
     queryOptions({
-      queryKey: [...key, 'playback-info', itemId, sourceId ?? null],
-      queryFn: () => request(itemId, false, sourceId),
+      queryKey: [
+        ...key,
+        'playback-info',
+        itemId,
+        sourceId ?? null,
+        ...(purpose ? [purpose] : []),
+      ],
+      queryFn: () => request(itemId, { sourceId, purpose }),
       staleTime: 10 * 60_000,
     });
 }
 
 /**
  * The version list asks on every open, as the server decides when a result is
- * too old; the player reuses whatever the list showed.
+ * too old; the player reuses whatever the list showed. The player's own list
+ * (`kept`) asks once, as asking again can search every indexer anew.
  */
 export function usePlaybackInfo(
   itemId: string,
-  opts: { listing?: boolean; sourceId?: string; enabled?: boolean } = {}
+  opts: {
+    listing?: boolean;
+    kept?: boolean;
+    sourceId?: string;
+    enabled?: boolean;
+    purpose?: Purpose;
+  } = {}
 ) {
   const options = usePlaybackInfoOptions();
+  const request = usePlaybackInfoRequest();
   return useQuery({
-    ...options(itemId, opts.sourceId),
+    ...options(itemId, opts.sourceId, opts.purpose),
+    ...(opts.kept && {
+      queryFn: () => request(itemId, { kept: true }),
+      staleTime: Infinity,
+    }),
     refetchOnMount: opts.listing ? 'always' : true,
     enabled: opts.enabled ?? true,
   });
 }
 
-export function useRefreshPlaybackInfo(itemId: string) {
+export function useRefreshPlaybackInfo(itemId: string, purpose?: Purpose) {
   const queryClient = useQueryClient();
   const request = usePlaybackInfoRequest();
   const options = usePlaybackInfoOptions();
   return useMutation({
-    mutationFn: () => request(itemId, true),
+    mutationFn: () => request(itemId, { refresh: true, purpose }),
     onSuccess: (data) =>
-      queryClient.setQueryData(options(itemId).queryKey, data),
+      queryClient.setQueryData(
+        options(itemId, undefined, purpose).queryKey,
+        data
+      ),
   });
 }
 
@@ -612,6 +723,12 @@ export function usePickableUsers() {
     enabled: useFeature('users'),
     staleTime: 5 * 60_000,
   });
+}
+
+export function useOwnAvatar(): string | null {
+  const { user } = useSession();
+  const users = usePickableUsers();
+  return users.data?.find((u) => u.user.Id === user.Id)?.avatar ?? null;
 }
 
 export function useActivity(enabled = true) {
@@ -655,6 +772,32 @@ export function useOwnSessions(enabled: boolean) {
     enabled,
   });
 }
+
+export function useRemoteDevices(
+  opts: { pollMs?: number; enabled?: boolean } = {}
+) {
+  const { client, user } = useSession();
+  return useQuery({
+    queryKey: [...useKey(), REMOTE_DEVICES],
+    queryFn: async () => {
+      const own = client.deviceId.toLowerCase();
+      const sessions = await client.get<SessionInfoDto[]>('/Sessions', {
+        ControllableByUserId: user.Id,
+      });
+      return sessions.filter(
+        (s) =>
+          s.SupportsRemoteControl &&
+          s.DeviceId?.toLowerCase() !== own &&
+          s.PlayableMediaTypes?.some((type) => type === 'Video')
+      );
+    },
+    staleTime: 30_000,
+    refetchInterval: opts.pollMs ?? false,
+    enabled: opts.enabled ?? true,
+  });
+}
+
+export const REMOTE_DEVICES = 'remote-devices';
 
 function playedEntry(userId: string, item: BaseItemDto): HistoryEntry {
   const at = Date.parse(item.UserData?.LastPlayedDate ?? '') || 0;
@@ -863,6 +1006,13 @@ export function useSetPlayedUpTo() {
   });
 }
 
+/**
+ * Only movies and shows are listed as favourites, and kept on trackers'
+ * watchlists; anything else already one can still be taken off.
+ */
+export const offersFavourite = (type: BaseItemDto['Type'], favorite: boolean) =>
+  favorite || type === 'Movie' || type === 'Series';
+
 export function useSetFavorite() {
   const { client, user } = useSession();
   const refresh = useRefreshAll();
@@ -930,7 +1080,7 @@ function isSkipped(
   skip: { fillers: boolean; recaps: boolean }
 ): boolean {
   return episodeMarks(episode).some((m) =>
-    m === 'Filler' ? skip.fillers : skip.recaps
+    m === 'filler' ? skip.fillers : skip.recaps
   );
 }
 
@@ -967,7 +1117,7 @@ export function useAdjacentEpisodes(item: BaseItemDto) {
           at >= 0 && i >= 0 && i < items.length;
           i += step
         ) {
-          if (unavailableLabel(items[i])) return null;
+          if (unavailableKind(items[i])) return null;
           if (!skipped(items[i])) return items[i];
         }
         return null;
@@ -999,7 +1149,7 @@ export function useEpisodesAfter() {
     if (at < 0) return [];
     const after: BaseItemDto[] = [];
     for (const episode of Items.slice(at + 1)) {
-      if (unavailableLabel(episode)) break;
+      if (unavailableKind(episode)) break;
       if (!isSkipped(episode, skip)) after.push(episode);
     }
     return after;

@@ -35,7 +35,8 @@ interface Actions {
 /**
  * Tells the system's media controls what plays and takes their presses: through
  * the AIOStreams app (the desktop one also shows it on Discord), the app around
- * the page, or the browser.
+ * the page, or the browser. Returns what a press does, for presses from
+ * elsewhere.
  */
 export function useNowPlaying(
   item: BaseItemDto,
@@ -43,9 +44,9 @@ export function useNowPlaying(
   actions: Actions
 ) {
   const { client } = useSession();
-  const [discord] = useSetting(settings.discord['playing']);
-  const [pip] = useSetting(settings.android.pip);
-  const [background] = useSetting(settings.android.background);
+  const [discord] = useSetting(settings.app.discord['playing']);
+  const [pip] = useSetting(settings.app.pip);
+  const [background] = useSetting(settings.app.background);
   const show = useItem(item.SeriesId ?? item.Id!);
   const imdb = (item.Type === 'Episode' ? show.data : item)?.ProviderIds?.Imdb;
   const title = itemTitle(item);
@@ -61,8 +62,7 @@ export function useNowPlaying(
   const host = currentHost();
 
   const latest = useLatest({ player, actions });
-  const press = React.useCallback((key: MediaKey) => {
-    if (mediaKeyJustTaken()) return;
+  const act = React.useCallback((key: MediaKey) => {
     noteInput();
     const { player, actions } = latest.current;
     const { paused, durationMs } = player.state;
@@ -93,6 +93,12 @@ export function useNowPlaying(
       }
     }
   }, []);
+  const press = React.useCallback(
+    (key: MediaKey) => {
+      if (!mediaKeyJustTaken()) act(key);
+    },
+    [act]
+  );
 
   React.useEffect(() => {
     const shell = appBridge();
@@ -136,7 +142,7 @@ export function useNowPlaying(
     };
   }, [press]);
 
-  const app = host.usePlayer ? undefined : host.mediaSession;
+  const app = host.player ? undefined : host.mediaSession;
   React.useEffect(() => {
     if (!app) return;
     const stop = app.listen?.(press);
@@ -190,7 +196,7 @@ export function useNowPlaying(
   ]);
 
   const session =
-    !host.usePlayer && !app && 'mediaSession' in navigator
+    !host.player && !app && 'mediaSession' in navigator
       ? navigator.mediaSession
       : null;
 
@@ -267,4 +273,6 @@ export function useNowPlaying(
     tell();
     return playhead.subscribe(tell);
   }, [session, paused, playhead, durationMs, rate]);
+
+  return act;
 }

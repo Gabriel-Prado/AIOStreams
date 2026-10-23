@@ -1,13 +1,17 @@
+import { t } from '@lingui/core/macro';
+import { Trans } from '@lingui/react/macro';
 import React from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from '../../lib/session';
+import { currentHost } from '../../lib/hosts';
 import { useAdjacentEpisodes, usePlaybackInfoOptions } from '../../lib/queries';
 import { landscapeUrl } from '../../lib/images';
 import { episodeCode, itemSubtitle, ticksToMs } from '../../lib/format';
 import { navigate, to, versionsPath } from '../../lib/paths';
 import { playableSources } from '../../lib/playback/play';
-import { streamUrl } from '../../lib/playback/stream';
+import { playerUrl, requiredHeaders } from '../../lib/playback/stream';
+import { useFindDownloaded } from '../../lib/downloads';
 import {
   focusOn,
   inputCount,
@@ -23,8 +27,6 @@ import type { BaseItemDto, MediaSegmentDto, SourceInfo } from '../../lib/types';
 import { CachedImage } from '../cached-image';
 import { PlayerAction } from './buttons';
 import { usePlayhead } from '../../lib/playback/playhead';
-
-type Direction = 'previous' | 'next';
 
 /** One notice, which a later press takes over. */
 const NOTICE = 'episode-versions';
@@ -47,6 +49,10 @@ const OPEN_LEAD_MS = 30_000;
  * When the prompt shows: at the credits when they end the video, else `lead`
  * seconds before the end.
  */
+/** A segment ending in the episode's last stretch, whose credits the next episode's card can take over. */
+export const endsEpisode = (durationMs: number, endMs: number) =>
+  endMs >= durationMs * 0.9 && durationMs - endMs <= CREDITS_TAIL_MS;
+
 function promptAt(
   durationMs: number,
   outro: MediaSegmentDto | undefined,
@@ -57,8 +63,7 @@ function promptAt(
   if (prompt === 'credits' && outro) {
     const start = ticksToMs(outro.StartTicks);
     const end = ticksToMs(outro.EndTicks);
-    if (end >= durationMs * 0.9 && durationMs - end <= CREDITS_TAIL_MS)
-      return start;
+    if (endsEpisode(durationMs, end)) return start;
   }
   return durationMs - lead * 1000;
 }
@@ -120,16 +125,23 @@ export function useNextEpisodePrompt({
   player,
   segments,
   onBack,
+  group,
 }: {
   item: BaseItemDto;
   source: SourceInfo;
   player: PlayerController;
   segments: MediaSegmentDto[] | null | undefined;
   onBack: () => void;
+  /** Moves a watch party on instead, for everyone. */
+  group?: {
+    step(direction: 'next' | 'previous', episode: BaseItemDto): void;
+    play(episode: BaseItemDto): void;
+  };
 }) {
   const { client } = useSession();
   const queryClient = useQueryClient();
   const infoOptions = usePlaybackInfoOptions();
+  const downloaded = useFindDownloaded();
   const adjacent = useAdjacentEpisodes(item).data;
   const next = adjacent?.next ?? null;
   const previous = adjacent?.previous ?? null;
@@ -168,21 +180,37 @@ export function useNextEpisodePrompt({
 
   const leaving = React.useRef(false);
   // The latest press wins; a lookup it overtook is dropped when it lands.
-  const wanted = React.useRef<Direction | null>(null);
-  const [loading, setLoading] = React.useState<Direction | null>(null);
-  const playEpisode = React.useCallback(
-    async (direction: Direction, episode: BaseItemDto | null) => {
+  const wanted = React.useRef<string | null>(null);
+  /** `previous`, `next`, or the id of an episode picked from the list. */
+  const [loading, setLoading] = React.useState<string | null>(null);
+  const playOne = React.useCallback(
+    async (key: string, episode: BaseItemDto | null) => {
       if (!episode || leaving.current) return false;
-      if (wanted.current === direction) return true;
-      wanted.current = direction;
-      setLoading(direction);
+      if (group) {
+        if (key === 'next' || key === 'previous') group.step(key, episode);
+        else group.play(episode);
+        return true;
+      }
+      if (wanted.current === key) return true;
+      wanted.current = key;
+      // A downloaded episode plays its own file, as Play does.
+      const local = downloaded(episode);
+      if (local) {
+        leaving.current = true;
+        navigate(to.play(episode.Id!, local.source!.Id!, resumeMs(episode)), {
+          replace: true,
+        });
+        return true;
+      }
+      setLoading(key);
       const code = episodeCode(episode.ParentIndexNumber, episode.IndexNumber);
-      toast.loading(`Finding versions of ${code || episode.Name}…`, {
+      const name = code || episode.Name || '';
+      toast.loading(t`Finding versions of ${name}…`, {
         id: NOTICE,
       });
       try {
         const info = await queryClient.fetchQuery(infoOptions(episode.Id!));
-        if (wanted.current !== direction) return true;
+        if (wanted.current !== key) return true;
         leaving.current = true;
         const target = carryOn(playableSources(info), source, fallbackFirst);
         if (target)
@@ -192,34 +220,38 @@ export function useNextEpisodePrompt({
         else navigate(versionsPath(episode), { replace: true });
         return true;
       } catch {
-        if (wanted.current !== direction) return true;
-        toast.error('Could not find versions of that episode');
+        if (wanted.current !== key) return true;
+        toast.error(t`Could not find versions of that episode`);
         return false;
       } finally {
-        if (wanted.current === direction) {
+        if (wanted.current === key) {
           wanted.current = null;
           setLoading(null);
           dismissNotice();
         }
       }
     },
-    [queryClient, infoOptions, source, fallbackFirst]
+    [queryClient, infoOptions, source, fallbackFirst, group, downloaded]
   );
   React.useEffect(() => dismissNotice, []);
   const playNext = React.useCallback(
-    () => playEpisode('next', next),
-    [playEpisode, next]
+    () => playOne('next', next),
+    [playOne, next]
   );
   const playPrevious = React.useCallback(
-    () => playEpisode('previous', previous),
-    [playEpisode, previous]
+    () => playOne('previous', previous),
+    [playOne, previous]
+  );
+  const playEpisode = React.useCallback(
+    (episode: BaseItemDto) => void playOne(episode.Id!, episode),
+    [playOne]
   );
 
   const latestPlayer = useLatest(player);
   const playOn = React.useCallback(
     ({ pause = false } = {}) => {
       if (!next) return Promise.resolve(false);
-      if (asksFirst(stillWatching)) {
+      if (!group && asksFirst(stillWatching)) {
         const { state, togglePlay } = latestPlayer.current;
         if (pause && !state.paused) togglePlay();
         setAsking(true);
@@ -228,7 +260,7 @@ export function useNextEpisodePrompt({
       countPlayedOn();
       return playNext();
     },
-    [next, stillWatching, playNext, latestPlayer]
+    [next, stillWatching, playNext, latestPlayer, group]
   );
 
   // A player in its own window takes input there; its pauses are what the page sees of it.
@@ -246,10 +278,11 @@ export function useNextEpisodePrompt({
     pastList;
   const openDue = listDue && autoplay && !asksFirst(stillWatching) && pastOpen;
   React.useEffect(() => {
-    if (listDue && next) void queryClient.prefetchQuery(infoOptions(next.Id!));
-  }, [listDue, next, queryClient, infoOptions]);
+    if (listDue && next && !downloaded(next))
+      void queryClient.prefetchQuery(infoOptions(next.Id!));
+  }, [listDue, next, queryClient, infoOptions, downloaded]);
   React.useEffect(() => {
-    if (!openDue || !next) return;
+    if (!openDue || !next || downloaded(next)) return;
     let current = true;
     queryClient
       .fetchQuery(infoOptions(next.Id!))
@@ -262,7 +295,15 @@ export function useNextEpisodePrompt({
     return () => {
       current = false;
     };
-  }, [openDue, next, queryClient, infoOptions, source, fallbackFirst]);
+  }, [
+    openDue,
+    next,
+    queryClient,
+    infoOptions,
+    source,
+    fallbackFirst,
+    downloaded,
+  ]);
 
   // A player with a playlist of its own gets the next episode once this one plays.
   const queueNext = useLatest(player.queueNext);
@@ -273,17 +314,30 @@ export function useNextEpisodePrompt({
     !asksFirst(stillWatching);
   React.useEffect(() => {
     if (!canQueue || !next) return;
+    const local = downloaded(next);
+    if (local) {
+      queueNext.current?.({
+        itemId: next.Id!,
+        source: local.source!,
+        startMs: resumeMs(next),
+        url: local.local!.video,
+      });
+      return;
+    }
     let current = true;
     queryClient
       .fetchQuery(infoOptions(next.Id!))
-      .then((info) => {
+      .then(async (info) => {
         const target = carryOn(playableSources(info), source, fallbackFirst);
         if (!current || !target) return;
+        const url = await playerUrl(client, next.Id!, target);
+        if (!current || !url) return;
         queueNext.current?.({
           itemId: next.Id!,
           source: target,
           startMs: resumeMs(next),
-          url: streamUrl(client, next.Id!, target, info.PlaySessionId),
+          url,
+          headers: requiredHeaders(target),
         });
       })
       .catch(() => {});
@@ -299,10 +353,12 @@ export function useNextEpisodePrompt({
     fallbackFirst,
     client,
     queueNext,
+    downloaded,
   ]);
 
   const [leftMs, setLeftMs] = React.useState(countdown * 1000);
   const counting = shown && autoplay && !paused;
+  const seconds = Math.max(1, Math.ceil(leftMs / 1000));
   React.useEffect(() => {
     if (!shown) setLeftMs(countdown * 1000);
   }, [shown, countdown]);
@@ -317,6 +373,12 @@ export function useNextEpisodePrompt({
 
   // While it shows, it stands in for the skip button, and Back from it hides it.
   const card = React.useRef<HTMLDivElement>(null);
+  // A remote is on it as it comes up, rather than a press away.
+  React.useEffect(() => {
+    if (!shown || !currentHost().tv || keyboardFocus()) return;
+    const play = card.current?.querySelector<HTMLElement>('[data-name=play]');
+    if (play) focusOn(play);
+  }, [shown]);
   useAction('player.skipSegment', () => void playNext(), shown);
   useAction(
     'player.controls',
@@ -350,7 +412,7 @@ export function useNextEpisodePrompt({
       <div
         ref={card}
         data-ui="next-episode-card"
-        className="fixed bottom-[calc(2rem+env(safe-area-inset-bottom))] right-4 z-20 transition-[bottom] peer-data-[visible]:bottom-24 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/10 bg-gray-950 shadow-2xl duration-300 animate-in fade-in-0 slide-in-from-right-4"
+        className="fixed bottom-[calc(2rem+env(safe-area-inset-bottom))] end-4 z-20 transition-[bottom] peer-data-[visible]:bottom-24 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/10 bg-gray-950 shadow-2xl duration-300 animate-in fade-in-0 slide-in-from-right-4 rtl:slide-in-from-left-4"
       >
         {image && (
           <CachedImage
@@ -363,7 +425,7 @@ export function useNextEpisodePrompt({
         <div className="space-y-3 p-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-[--muted]">
-              Next episode
+              <Trans>Next episode</Trans>
             </p>
             <p className="line-clamp-2 font-semibold">{itemSubtitle(next)}</p>
           </div>
@@ -375,16 +437,14 @@ export function useNextEpisodePrompt({
               className="flex-1"
               onClick={() => void playNext()}
             >
-              {counting
-                ? `Play in ${Math.max(1, Math.ceil(leftMs / 1000))}s`
-                : 'Play now'}
+              {counting ? t`Play in ${seconds}s` : t`Play now`}
             </PlayerAction>
             <PlayerAction
               data-ui="next-episode-action"
               data-name="hide"
               onClick={() => setDismissed(true)}
             >
-              Hide
+              <Trans>Hide</Trans>
             </PlayerAction>
           </div>
         </div>
@@ -410,6 +470,7 @@ export function useNextEpisodePrompt({
     playNext,
     playOn,
     playPrevious,
+    playEpisode,
     loading,
   };
 }
@@ -427,6 +488,7 @@ function StillWatching({
 }) {
   const { client } = useSession();
   const image = landscapeUrl(client, next, { maxWidth: 480 });
+  const upNext = itemSubtitle(next);
   useAction('back', onBack);
   return (
     <div
@@ -443,9 +505,11 @@ function StillWatching({
           />
         )}
         <div className="space-y-1">
-          <p className="text-2xl font-semibold">Are you still watching?</p>
+          <p className="text-2xl font-semibold">
+            <Trans>Are you still watching?</Trans>
+          </p>
           <p className="line-clamp-2 text-sm text-[--muted]">
-            Up next: {itemSubtitle(next)}
+            <Trans>Up next: {upNext}</Trans>
           </p>
         </div>
         <div className="flex flex-col justify-center gap-2 sm:flex-row">
@@ -457,14 +521,14 @@ function StillWatching({
             autoFocus
             onClick={onContinue}
           >
-            Continue watching
+            <Trans>Continue watching</Trans>
           </PlayerAction>
           <PlayerAction
             data-ui="still-watching-action"
             data-name="back"
             onClick={onBack}
           >
-            Back
+            <Trans>Back</Trans>
           </PlayerAction>
         </div>
       </div>

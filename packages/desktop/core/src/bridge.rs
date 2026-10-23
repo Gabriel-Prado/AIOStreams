@@ -1,15 +1,16 @@
-//! Messages between the page and the shell. Anything the page asks of mpv is
-//! checked here first, since a page must not reach local files or scripts.
+//! Messages between the page and the shell.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::discord::Presence;
-use crate::mpv::Kind;
 use crate::now_playing::{self, MediaKey};
+use crate::playback::{Change, Chapter, Load, PlayerState, Settings, Style, SubtitleLine, Track};
 
 /// Bumped when a message changes shape, so pages can tell shells apart.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,25 +20,83 @@ pub enum UpdateChannel {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
 pub enum Inbound {
     /// `external` messages go to the player started with `external-open`.
-    MpvCommand {
-        args: Vec<Value>,
+    PlayerLoad {
+        #[serde(flatten)]
+        load: Load,
         #[serde(default)]
         external: bool,
     },
-    MpvSetProp {
-        name: String,
-        value: Value,
+    PlayerStop {
         #[serde(default)]
         external: bool,
     },
-    /// Resends every observed property's current value.
-    MpvSync {
+    PlayerSet {
+        #[serde(flatten)]
+        change: Change,
         #[serde(default)]
         external: bool,
     },
+    PlayerSeek {
+        position_ms: f64,
+        #[serde(default)]
+        external: bool,
+    },
+    /// Adds a subtitle from the server and shows it.
+    PlayerSubtitleAdd {
+        url: String,
+        title: String,
+        language: String,
+        #[serde(default)]
+        external: bool,
+    },
+    /// The app's own player only: the user's player keeps its own look.
+    PlayerStyle(Style),
+    /// mpv's stats overlay, on one of its pages or off.
+    PlayerStatsOverlay {
+        page: Option<String>,
+        #[serde(default)]
+        external: bool,
+    },
+    /// Reports the lines of one of the file's own subtitles as mpv reads them, or stops with `None`.
+    PlayerSubtitleLines {
+        track: Option<String>,
+    },
+    /// Answered with `player-subtitle-index` once the file's index has been read.
+    PlayerSubtitleIndex,
+    /// Answered with `player-thumbnail`s for the keyframe at or before the position, newest asked
+    /// first, except the one at `showing_ms` the page has; without a position, reads the file's
+    /// index ahead of the first.
+    PlayerThumbnail {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        position_ms: Option<f64>,
+        showing_ms: Option<f64>,
+    },
+    /// Reports the player's whole state again.
+    PlayerSync {
+        #[serde(default)]
+        external: bool,
+    },
+    PlayerSettings(Settings),
+    /// A key the page left alone, in mpv's name for it, for the user's own key bindings.
+    PlayerKey {
+        key: String,
+    },
+    /// Answered with `youtube-resolved` carrying the same `request`.
+    YoutubeResolve {
+        request: String,
+        id: String,
+    },
+    /// Asks for an `audio-devices` answer.
+    AudioDevices,
     /// A subtitle file the user dropped or picked, base64-encoded.
     SubtitleFile {
         name: String,
@@ -76,6 +135,13 @@ pub enum Inbound {
         visible: bool,
     },
     AppInfo,
+    /// Picks the output that draws the video from the next start, then answers with a
+    /// `video-output`; `None` only asks.
+    VideoOutput {
+        output: Option<String>,
+    },
+    /// Quits and opens the app again.
+    Restart,
     OpenMpvConfig,
     OpenLogs,
     /// Versions, paths and the recent log, for a bug report; the page names its own build and the server's.
@@ -146,6 +212,8 @@ pub struct DownloadFile {
     pub url: String,
     pub path: String,
     pub kind: FileKind,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
 }
 
 /// A file the page writes itself, such as the item's details.
@@ -180,20 +248,59 @@ pub struct DownloadStatus {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Outbound {
-    MpvProp {
-        name: String,
-        data: Value,
+    YoutubeResolved {
+        request: String,
+        url: Option<String>,
+    },
+    PlayerState {
+        #[serde(flatten)]
+        state: PlayerState,
         #[serde(skip_serializing_if = "is_false")]
         external: bool,
     },
-    MpvEvent {
+    PlayerTracks {
+        tracks: Vec<Track>,
+        #[serde(skip_serializing_if = "is_false")]
+        external: bool,
+    },
+    PlayerChapters {
+        chapters: Vec<Chapter>,
+        #[serde(skip_serializing_if = "is_false")]
+        external: bool,
+    },
+    PlayerSubtitleLines {
+        track: String,
+        lines: Vec<SubtitleLine>,
+    },
+    /// Each of the file's own subtitles' lines from its index by mpv id, or none without one.
+    PlayerSubtitleIndex {
+        tracks: Option<BTreeMap<String, Vec<SubtitleLine>>>,
+    },
+    /// Where the page loads the JPEG of the keyframe at `position_ms`; without a `src` the file
+    /// has no thumbnails.
+    PlayerThumbnail {
+        url: String,
+        #[serde(rename = "positionMs", skip_serializing_if = "Option::is_none")]
+        position_ms: Option<u64>,
+        src: Option<String>,
+    },
+    /// `start`, `loaded` or `restart`.
+    PlayerEvent {
         name: &'static str,
         #[serde(skip_serializing_if = "is_false")]
         external: bool,
     },
-    MpvEnded {
+    /// For the app's own HDR output; never sent to the page.
+    VideoColour {
+        gamma: Option<String>,
+        primaries: Option<String>,
+    },
+    PlayerEnded {
         reason: &'static str,
         error: Option<String>,
+        /// The HTTP status a failed load answered with.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cause: Option<String>,
         #[serde(skip_serializing_if = "is_false")]
@@ -218,6 +325,18 @@ pub enum Outbound {
         platform: &'static str,
         mpv: Option<String>,
         ffmpeg: Option<String>,
+        #[serde(rename = "ac3Encoder")]
+        ac3_encoder: bool,
+    },
+    /// `outputs` is empty where there is no choice.
+    VideoOutput {
+        outputs: Vec<&'static str>,
+        running: &'static str,
+        chosen: &'static str,
+    },
+    /// mpv's `audio-device-list`.
+    AudioDevices {
+        devices: Value,
     },
     Diagnostics {
         text: String,
@@ -274,89 +393,6 @@ impl Outbound {
     }
 }
 
-pub const OBSERVED: &[(&str, Kind)] = &[
-    ("time-pos", Kind::Double),
-    ("duration", Kind::Double),
-    ("demuxer-cache-time", Kind::Double),
-    ("pause", Kind::Flag),
-    ("paused-for-cache", Kind::Flag),
-    ("seeking", Kind::Flag),
-    ("idle-active", Kind::Flag),
-    ("volume", Kind::Double),
-    ("volume-max", Kind::Double),
-    ("mute", Kind::Flag),
-    ("speed", Kind::Double),
-    ("aid", Kind::String),
-    ("sid", Kind::String),
-    ("track-list", Kind::Json),
-    ("chapter-list", Kind::Json),
-    ("video-params", Kind::Json),
-    ("fullscreen", Kind::Flag),
-];
-
-pub const THROTTLED: &[&str] = &["time-pos", "demuxer-cache-time"];
-pub const THROTTLE_MS: u64 = 250;
-
-const SETTABLE: &[&str] = &[
-    "pause",
-    "volume",
-    "mute",
-    "speed",
-    "aid",
-    "sid",
-    "secondary-sid",
-    "sub-delay",
-    "audio-delay",
-    "panscan",
-    "keepaspect",
-    "sub-scale",
-    "sub-pos",
-    "sub-visibility",
-    "time-pos",
-    "sub-bold",
-    "sub-color",
-    "sub-outline-color",
-    "sub-outline-size",
-    "sub-back-color",
-    "sub-border-style",
-    "sub-ass-override",
-    "sub-ass-force-margins",
-    "hwdec",
-    "audio-channels",
-    "audio-spdif",
-    "fullscreen",
-];
-
-const LOADFILE_OPTIONS: &[&str] = &[
-    "start",
-    "aid",
-    "sid",
-    "alang",
-    "slang",
-    "force-media-title",
-    "subs-fallback",
-    "subs-fallback-forced",
-    "subs-with-matching-audio",
-];
-
-/// mpv's built-in stats.lua; a page toggle hides the overlay when it is shown.
-const STATS_BINDINGS: &[&str] = &[
-    "stats/display-stats-toggle",
-    "stats/display-page-1-toggle",
-    "stats/display-page-2-toggle",
-    "stats/display-page-3-toggle",
-    "stats/display-page-5-toggle",
-];
-
-const SEEK_FLAGS: &[&str] = &[
-    "relative",
-    "absolute",
-    "absolute-percent",
-    "relative-percent",
-    "keyframes",
-    "exact",
-];
-
 pub fn origin(url: &str) -> Option<String> {
     let url = url::Url::parse(url).ok()?;
     let origin = url.origin();
@@ -366,134 +402,4 @@ pub fn origin(url: &str) -> Option<String> {
     } else {
         Some(format!("{}://{}", url.scheme(), url.host_str()?))
     }
-}
-
-fn is_web_url(s: &str) -> bool {
-    url::Url::parse(s).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
-}
-
-fn arg_string(v: &Value) -> Result<String, String> {
-    match v {
-        Value::String(s) => Ok(s.clone()),
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Bool(b) => Ok(if *b { "yes" } else { "no" }.into()),
-        _ => Err(format!("unsupported argument {v}")),
-    }
-}
-
-fn check_options(options: &str) -> Result<(), String> {
-    for pair in options.split(',').filter(|p| !p.is_empty()) {
-        let (key, value) = pair.split_once('=').ok_or("options are key=value")?;
-        if !LOADFILE_OPTIONS.contains(&key) {
-            return Err(format!("option {key} is not allowed"));
-        }
-        // mpv reads %n% as a length prefix, which could smuggle in more options.
-        if value.contains('%') {
-            return Err(format!("option {key} has an unsupported value"));
-        }
-    }
-    Ok(())
-}
-
-fn check_flags(flags: Option<&String>, allowed: &[&str]) -> Result<(), String> {
-    match flags {
-        Some(f) if !f.split('+').all(|p| allowed.contains(&p)) => {
-            Err(format!("flags {f} are not allowed"))
-        }
-        _ => Ok(()),
-    }
-}
-
-fn check_number(v: Option<&String>) -> Result<(), String> {
-    match v {
-        Some(n) if n.parse::<f64>().is_err() => Err(format!("{n} is not a number")),
-        _ => Ok(()),
-    }
-}
-
-/// `local` says whether a path is one of the app's own downloads, the only
-/// files the page may open.
-pub fn command(args: &[Value], local: &dyn Fn(&str) -> bool) -> Result<Vec<String>, String> {
-    let args = args.iter().map(arg_string).collect::<Result<Vec<_>, _>>()?;
-    let name = args.first().ok_or("empty command")?.as_str();
-    match name {
-        // loadfile <url> [<flags> [<index> [<options>]]]
-        "loadfile" => {
-            if !args.get(1).is_some_and(|u| is_web_url(u) || local(u)) {
-                return Err("loadfile takes an http(s) url or a download".into());
-            }
-            check_flags(
-                args.get(2),
-                &[
-                    "replace",
-                    "append",
-                    "append-play",
-                    "insert-next",
-                    "insert-next-play",
-                ],
-            )?;
-            check_number(args.get(3))?;
-            if let Some(options) = args.get(4) {
-                check_options(options)?;
-            }
-            if args.len() > 5 {
-                return Err("too many arguments".into());
-            }
-        }
-        "sub-add" | "audio-add" => {
-            if !args.get(1).is_some_and(|u| is_web_url(u) || local(u)) {
-                return Err(format!("{name} takes an http(s) url or a download"));
-            }
-            check_flags(args.get(2), &["select", "auto", "cached"])?;
-            if args.len() > 5 {
-                return Err("too many arguments".into());
-            }
-        }
-        "sub-remove" | "audio-remove" => {
-            check_number(args.get(1))?;
-            if args.len() > 2 {
-                return Err("too many arguments".into());
-            }
-        }
-        "seek" => {
-            check_number(args.get(1))?;
-            check_flags(args.get(2), SEEK_FLAGS)?;
-            if args.len() > 3 {
-                return Err("too many arguments".into());
-            }
-        }
-        "stop" | "frame-step" | "frame-back-step" | "playlist-clear" => {
-            if args.len() > 1 {
-                return Err("too many arguments".into());
-            }
-        }
-        // Only the user's own input.conf binds keys, since default bindings are off.
-        "keypress" => {
-            if args.len() != 2 || args[1].is_empty() || args[1].chars().any(char::is_whitespace) {
-                return Err("keypress takes one key name".into());
-            }
-        }
-        "script-binding" => {
-            if args.len() != 2 || !STATS_BINDINGS.contains(&args[1].as_str()) {
-                return Err("only the stats overlay's bindings are allowed".into());
-            }
-        }
-        "set" | "cycle" | "add" => {
-            if !args.get(1).is_some_and(|p| SETTABLE.contains(&p.as_str())) {
-                return Err(format!("{name} is not allowed on that property"));
-            }
-            if args.len() > 3 {
-                return Err("too many arguments".into());
-            }
-        }
-        _ => return Err(format!("command {name} is not allowed")),
-    }
-    Ok(args)
-}
-
-pub fn set_prop(name: &str, value: &Value) -> Result<String, String> {
-    if !SETTABLE.contains(&name) {
-        return Err(format!("property {name} is not settable"));
-    }
-    arg_string(value)
 }

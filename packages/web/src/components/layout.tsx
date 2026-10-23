@@ -1,23 +1,24 @@
 import React from 'react';
+import { t } from '@lingui/core/macro';
+import { Trans } from '@lingui/react/macro';
 import { motion } from 'motion/react';
 import {
   Outlet,
+  useChildMatches,
   useElementScrollRestoration,
   useRouterState,
 } from '@tanstack/react-router';
 import {
   BiCalendar,
+  BiGroup,
   BiDownload,
   BiCompass,
   BiHeart,
   BiHistory,
   BiHomeAlt2,
   BiLoaderAlt,
-  BiLogOutCircle,
   BiCog,
   BiSearch,
-  BiServer,
-  BiSliderAlt,
   BiTransferAlt,
   BiWifiOff,
   BiX,
@@ -42,16 +43,14 @@ import { HoverCard } from '@aiostreams/ui/hover-card';
 import { Tooltip } from '@aiostreams/ui/tooltip';
 import type { IconType } from 'react-icons';
 import { Sidebar, type SidebarItem } from '@aiostreams/ui/shared/sidebar';
-import {
-  ConfirmationDialog,
-  useConfirmationDialog,
-} from '@aiostreams/ui/shared/confirmation-dialog';
 import { cn } from '@aiostreams/ui/core/styling';
 import { useMediaQuery } from '@aiostreams/ui/hooks/media-query';
 import { useSession } from '../lib/session';
-import { usePickableUsers } from '../lib/queries';
-import { configureUrl, navigate, to } from '../lib/paths';
+import { useOwnAvatar, usePickableUsers } from '../lib/queries';
+import { navigate, to } from '../lib/paths';
 import { currentHost } from '../lib/hosts';
+import { pageRtl } from '../lib/direction';
+import { shellHost } from '../lib/hosts/shell';
 import { serverAddress } from '../lib/servers';
 import { useServerInfo } from '../lib/server-info';
 import { useDiscordBrowsing } from '../lib/discord';
@@ -69,10 +68,21 @@ import { UserAvatar } from './user-avatar';
 import { BrandLogo } from './brand-logo';
 import { BarSurface } from './bar-surface';
 import { VersionPickerProvider } from './version-picker';
+import { RemoteTarget } from './remote-target';
+import { RemoteSheet } from './remote-sheet';
+import { WatchNextSync } from './watch-next';
+import { RandomPick } from './random-pick';
 import { ItemMenuHost } from './item-menu';
 import { HomePage } from '../pages/home';
 import { PageShown } from '../lib/page-shown';
 import { GlideLayers } from './glide-layers';
+import { UpdatePrompt } from './update-prompt';
+import { PartyHost } from './party/party-host';
+import { openPartySheet } from './party/party-sheet';
+import { useParty } from '../lib/party/party';
+
+// Kept mounted under every page, so it skips the layout's render on each route change.
+const KeptHome = React.memo(HomePage);
 
 const PAGE_FADE = {
   initial: { opacity: 0, top: 6 },
@@ -94,8 +104,7 @@ function Logo() {
 /** The signed-in user's picture, in a sidebar item's icon slot. */
 function SidebarAvatar({ className }: { className?: string }) {
   const { user } = useSession();
-  const users = usePickableUsers();
-  const avatar = users.data?.find((u) => u.user.Id === user.Id)?.avatar ?? null;
+  const avatar = useOwnAvatar();
   return (
     <UserAvatar
       name={user.Name}
@@ -204,7 +213,7 @@ function AccountMenu({
       trigger={trigger}
     >
       <DropdownMenuLabel>
-        <span className="block truncate">{user.Name ?? 'You'}</span>
+        <span className="block truncate">{user.Name ?? t`You`}</span>
         <span className="block truncate text-xs font-normal text-[--muted]">
           {info.name ?? serverAddress(client.base)}
         </span>
@@ -234,31 +243,22 @@ function AccountMenu({
 }
 
 /** The avatar at the foot of the sidebar, styled as its other items. */
-function SidebarAccount({ items }: { items: SidebarItem[] }) {
+function SidebarAccount({ you }: { you: SidebarItem }) {
   const { user } = useSession();
   const sidebar = useAppSidebarContext();
   return (
-    <AccountMenu
-      side="right"
-      align="end"
-      sideOffset={8}
-      items={items}
-      trigger={
-        <div>
-          <VerticalMenu
-            collapsed={!sidebar.isBelowBreakpoint}
-            isSidebar
-            itemClass="relative"
-            items={[
-              {
-                id: 'account',
-                name: user.Name ?? 'You',
-                iconType: SidebarAvatar,
-              },
-            ]}
-          />
-        </div>
-      }
+    <VerticalMenu
+      collapsed={!sidebar.isBelowBreakpoint}
+      isSidebar
+      itemClass="relative"
+      items={[
+        {
+          id: 'account',
+          name: user.Name ?? t`You`,
+          iconType: SidebarAvatar,
+          onClick: you.onClick,
+        },
+      ]}
     />
   );
 }
@@ -312,7 +312,7 @@ function HistoryButton({
       )}
       {...props}
     >
-      <Icon className="text-2xl transition group-hover/history:-rotate-2 group-hover/history:scale-[1.05]" />
+      <Icon className="text-2xl transition group-hover/history:-rotate-2 group-hover/history:scale-[1.05] rtl:-scale-x-100 rtl:group-hover/history:rotate-2 rtl:group-hover/history:-scale-x-[1.05]" />
     </button>
   );
 }
@@ -330,7 +330,7 @@ function HistoryButtons() {
   const back = (
     <HistoryButton
       data-name="back"
-      label="Back"
+      label={t`Back`}
       icon={LuCircleArrowLeft}
       disabled={nav?.canGoBack === false}
       onClick={() => window.history.back()}
@@ -346,16 +346,16 @@ function HistoryButtons() {
         back
       ) : (
         <HoverCard
-          side="right"
+          side={pageRtl() ? 'left' : 'right'}
           sideOffset={0}
           openDelay={150}
           closeDelay={150}
-          className="w-auto border-none bg-transparent p-0 pl-1.5 shadow-none"
+          className="w-auto border-none bg-transparent p-0 ps-1.5 shadow-none"
           trigger={<span className="flex">{back}</span>}
         >
           <HistoryButton
             data-name="forward"
-            label="Forward"
+            label={t`Forward`}
             icon={LuCircleArrowRight}
             className="border border-white/10 bg-[--paper] shadow-lg shadow-black/50"
             onClick={() => window.history.forward()}
@@ -377,7 +377,7 @@ function ConnectionNote() {
 }
 
 const NOTE_PLACE =
-  'fixed bottom-[max(1rem,calc(var(--nav-bar)+0.5rem))] right-4 z-[100] border border-white/10 bg-gray-950/90 shadow-lg backdrop-blur';
+  'fixed bottom-[max(1rem,calc(var(--nav-bar)+0.5rem))] end-4 z-[100] border border-white/10 bg-gray-950/90 shadow-lg backdrop-blur';
 
 function Unreachable() {
   const [saved] = useSetting(settings.cache.enabled);
@@ -391,7 +391,7 @@ function Unreachable() {
             type="button"
             data-ui="connection-note"
             data-state="small"
-            aria-label="Can't reach the server"
+            aria-label={t`Can't reach the server`}
             onClick={() => {
               setSmall(false);
               retryNow();
@@ -405,7 +405,7 @@ function Unreachable() {
           </button>
         }
       >
-        Can't reach the server
+        <Trans>Can't reach the server</Trans>
       </Tooltip>
     );
   }
@@ -414,20 +414,22 @@ function Unreachable() {
       data-ui="connection-note"
       className={cn(
         NOTE_PLACE,
-        'flex items-center rounded-xl text-sm duration-300 animate-in fade-in-0 slide-in-from-right-4'
+        'flex items-center rounded-xl text-sm duration-300 animate-in fade-in-0 slide-in-from-right-4 rtl:slide-in-from-left-4'
       )}
     >
       <button
         type="button"
         onClick={retryNow}
-        className="flex items-center gap-2.5 py-2 pl-4 pr-2 text-left"
+        className="flex items-center gap-2.5 py-2 ps-4 pe-2 text-start"
       >
         <BiLoaderAlt className="flex-none animate-spin text-base text-[--muted]" />
         <span>
-          <span className="block font-semibold">Reconnecting…</span>
+          <span className="block font-semibold">
+            <Trans>Reconnecting…</Trans>
+          </span>
           {saved && (
             <span className="block text-xs text-[--muted]">
-              Showing saved pages
+              <Trans>Showing saved pages</Trans>
             </span>
           )}
         </span>
@@ -439,15 +441,15 @@ function Unreachable() {
           onClick={() => navigate(to.downloads)}
           className="rounded-full px-3 py-1.5 text-xs font-semibold transition-colors hover:bg-white/10"
         >
-          Downloads
+          <Trans>Downloads</Trans>
         </button>
       )}
       <button
         type="button"
         data-ui="connection-note-dismiss"
-        aria-label="Dismiss"
+        aria-label={t`Dismiss`}
         onClick={() => setSmall(true)}
-        className="mr-2 flex size-7 flex-none items-center justify-center rounded-full text-base text-[--muted] transition-colors hover:bg-white/10 hover:text-white"
+        className="me-2 flex size-7 flex-none items-center justify-center rounded-full text-base text-[--muted] transition-colors hover:bg-white/10 hover:text-white"
       >
         <BiX />
       </button>
@@ -456,8 +458,7 @@ function Unreachable() {
 }
 
 export function WebLayout() {
-  const { client, signOut, switchUser, changeServer } = useSession();
-  const configure = configureUrl(client.base, useServerInfo());
+  const { switchUser } = useSession();
   const users = usePickableUsers();
   const several = (users.data?.length ?? 0) > 1;
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -465,21 +466,19 @@ export function WebLayout() {
     select: (s) => s.location.state.__TSR_key ?? s.location.href,
   });
   const onHome = pathname === '/';
-  // Home stays, hidden, while other pages are open: going back to its entry
-  // shows it again rather than building it anew. Any other visit starts afresh,
-  // and playback lets it go, to leave the player the memory.
+  // From the match the outlet shows, which can trail the location for a render.
+  const playing = useChildMatches({
+    select: (matches) => !!matches[0]?.pathname.startsWith('/play/'),
+  });
+  useServerEvents(playing);
+  // Home stays, hidden, while other pages and the player are open: going back
+  // to its entry shows it again rather than building it anew. Any other visit
+  // starts afresh.
   const [kept, setKept] = React.useState<string>();
   if (onHome && kept !== entry) setKept(entry);
-  if (kept && pathname.startsWith('/play/')) setKept(undefined);
-  useDiscordBrowsing(pathname);
-  useServerEvents();
-  useDownloadRunner();
-  usePendingStops();
-  useAction('search', () => navigate(to.search()));
-  useAction('home', () => navigate(to.home));
   const activity: SidebarItem = {
     id: 'activity',
-    name: 'Activity',
+    name: t`Activity`,
     iconType: BiHistory,
     isCurrent: pathname.startsWith('/history'),
     onClick: () => navigate(to.history),
@@ -487,18 +486,18 @@ export function WebLayout() {
   const downloads: SidebarItem | null = downloadsHost()
     ? {
         id: 'downloads',
-        name: 'Downloads',
+        name: t`Downloads`,
         iconType: BiDownload,
         isCurrent: pathname.startsWith('/downloads'),
         onClick: () => navigate(to.downloads),
       }
     : null;
   const touch = useMediaQuery('(pointer: coarse)');
-  const [touchNavigation] = useSetting(settings.touchNavigation);
-  const [tvNavigation] = useSetting(settings.tvNavigation);
-  const [tvTopBar] = useSetting(settings.tvTopBar);
-  const [railShape] = useSetting(settings.railShape);
-  const [railNames] = useSetting(settings.railNames);
+  const [touchNavigation] = useSetting(settings.interface.touchNavigation);
+  const [tvNavigation] = useSetting(settings.interface.tvNavigation);
+  const [tvTopBar] = useSetting(settings.interface.tvTopBar);
+  const [railShape] = useSetting(settings.interface.railShape);
+  const [railNames] = useSetting(settings.interface.railNames);
   // What wide screens show; narrow ones always have the bar.
   const nav = currentHost().tv
     ? (`tv-${tvNavigation}` as const)
@@ -514,31 +513,29 @@ export function WebLayout() {
   }, [nav]);
   const calendar: SidebarItem = {
     id: 'calendar',
-    name: 'Calendar',
+    name: t`Calendar`,
     iconType: BiCalendar,
     isCurrent: pathname.startsWith('/calendar'),
     onClick: () => navigate(to.calendar()),
   };
-  const confirmSignOut = useConfirmationDialog({
-    title: 'Sign out',
-    description: __STANDALONE__
-      ? 'Sign out of this server?'
-      : 'Sign out of this browser?',
-    actionText: 'Sign out',
-    onConfirm: signOut,
-  });
-
+  const inParty = !!useParty();
+  const together: SidebarItem = {
+    id: 'party',
+    name: inParty ? t`Watch party` : t`Watch together`,
+    iconType: BiGroup,
+    onClick: () => openPartySheet(),
+  };
   const items: SidebarItem[] = [
     {
       id: 'home',
-      name: 'Home',
+      name: t`Home`,
       iconType: BiHomeAlt2,
       isCurrent: pathname === '/',
       onClick: () => navigate(to.home),
     },
     {
       id: 'discover',
-      name: 'Discover',
+      name: t`Discover`,
       iconType: BiCompass,
       isCurrent:
         pathname.startsWith('/discover') || pathname.startsWith('/library'),
@@ -546,221 +543,231 @@ export function WebLayout() {
     },
     {
       id: 'search',
-      name: 'Search',
+      name: t`Search`,
       iconType: BiSearch,
       isCurrent: pathname.startsWith('/search'),
       onClick: () => navigate(to.search()),
     },
     {
       id: 'favourites',
-      name: 'Favourites',
+      name: t`Favourites`,
       iconType: BiHeart,
       isCurrent: pathname.startsWith('/favourites'),
       onClick: () => navigate(to.favourites()),
     },
     calendar,
     activity,
+    together,
     ...(downloads ? [downloads] : []),
   ];
 
   const settingsItem: SidebarItem = {
     id: 'settings',
-    name: 'Settings',
+    name: t`Settings`,
     iconType: BiCog,
     isCurrent: pathname.startsWith('/settings'),
     onClick: () => navigate(to.settings()),
   };
 
-  const accountItems: SidebarItem[] = [
-    ...(several
-      ? [
-          {
-            id: 'switch-user',
-            name: 'Switch user',
-            iconType: BiTransferAlt,
-            onClick: switchUser,
-          },
-        ]
-      : []),
-    ...(configure
-      ? [
-          {
-            id: 'configure',
-            name: 'Configure',
-            iconType: BiSliderAlt,
-            onClick: () => window.open(configure, '_blank'),
-          },
-        ]
-      : []),
-    ...(changeServer
-      ? [
-          {
-            id: 'change-server',
-            name: 'Change server',
-            iconType: BiServer,
-            onClick: changeServer,
-          },
-        ]
-      : []),
-    {
-      id: 'sign-out',
-      name: 'Sign out',
-      iconType: BiLogOutCircle,
-      onClick: () => confirmSignOut.open(),
-    },
-  ];
+  const switchItem: SidebarItem = {
+    id: 'switch-user',
+    name: t`Switch user`,
+    iconType: BiTransferAlt,
+    onClick: switchUser,
+  };
+  const you: SidebarItem = several
+    ? switchItem
+    : {
+        id: 'account',
+        name: t`Account`,
+        onClick: () => navigate(to.settings('account')),
+      };
 
   const page = cn(
-    'relative pb-[var(--nav-bar)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[var(--top-bar,0px)]',
+    'relative pb-[var(--nav-bar)] ps-[env(safe-area-inset-left)] pe-[env(safe-area-inset-right)] pt-[var(--top-bar,0px)]',
     // In place of the sidebar's gutter, which pages leave to it.
     (nav === 'bar' || nav === 'tv-top' || shape === 'corner') &&
-      'lg:pl-[calc(2.5rem+env(safe-area-inset-left))]',
+      'lg:ps-[calc(2.5rem+env(safe-area-inset-left))]',
     shape === 'floating' &&
-      'lg:pl-[calc(var(--side-bar)+env(safe-area-inset-left))]'
+      'lg:ps-[calc(var(--side-bar)+env(safe-area-inset-left))]'
   );
 
   return (
-    <AppSidebarProvider>
-      <AppLayout
-        withSidebar={side}
-        sidebarSize={nav === 'tv-rail' && named ? 'sm' : 'slim'}
+    <>
+      {!playing && <PagesWork pathname={pathname} />}
+      <div
+        data-ui="shell"
+        inert={playing}
+        className={cn(playing && 'invisible [content-visibility:hidden]')}
       >
-        {side && (
-          <AppLayoutSidebar data-ui="sidebar">
-            {nav === 'rail' ? (
-              <TouchRail
-                items={items}
-                footerItems={[settingsItem]}
-                accountItems={accountItems}
-                named={named}
-              />
-            ) : nav === 'tv-rail' ? (
-              <TvRail
-                items={items}
-                footerItems={[settingsItem]}
-                accountItems={accountItems}
-                open={named}
-              />
-            ) : (
-              <Sidebar
-                header={<Logo />}
-                items={items}
-                belowItems={<HistoryButtons />}
-                footerItems={[settingsItem]}
-                footer={<SidebarAccount items={accountItems} />}
-              />
-            )}
-          </AppLayoutSidebar>
-        )}
-        {shape === 'floating' &&
-          (nav === 'rail' ? (
-            <TouchRail
-              items={items}
-              footerItems={[settingsItem]}
-              accountItems={accountItems}
-              named={named}
-              floating
-            />
-          ) : (
-            <TvRail
-              items={items}
-              footerItems={[settingsItem]}
-              accountItems={accountItems}
-              open={named}
-              floating
-            />
-          ))}
-        <AppLayout>
-          <AppLayoutContent
-            style={
-              nav === 'tv-top'
-                ? ({
-                    '--top-bar': TOP_BAR_HEIGHT[tvTopBar],
-                  } as React.CSSProperties)
-                : shape === 'floating'
-                  ? ({
-                      '--side-bar':
-                        FLOAT_GUTTER[nav === 'rail' ? 'touch' : 'tv'][
-                          named ? 'named' : 'icons'
-                        ],
-                    } as React.CSSProperties)
-                  : undefined
-            }
-            className={cn(
-              shape === 'corner' &&
-                (nav === 'rail'
-                  ? 'lg:[--top-bar:calc(1rem+3.875rem)]'
-                  : '[--top-bar:calc(1.5rem+3.875rem)]')
-            )}
+        <AppSidebarProvider>
+          <AppLayout
+            withSidebar={side}
+            sidebarSize={nav === 'tv-rail' && named ? 'sm' : 'slim'}
           >
-            {shape === 'corner' && (
-              <CornerMenu
-                items={items}
-                footerItems={[settingsItem]}
-                accountItems={accountItems}
-                tv={nav === 'tv-rail'}
-              />
+            {side && (
+              <AppLayoutSidebar data-ui="sidebar">
+                {nav === 'rail' ? (
+                  <TouchRail
+                    items={items}
+                    footerItems={[settingsItem]}
+                    you={you}
+                    named={named}
+                  />
+                ) : nav === 'tv-rail' ? (
+                  <TvRail
+                    items={items}
+                    footerItems={[settingsItem]}
+                    you={you}
+                    open={named}
+                  />
+                ) : (
+                  <Sidebar
+                    header={<Logo />}
+                    items={items}
+                    belowItems={<HistoryButtons />}
+                    footerItems={[settingsItem]}
+                    footer={<SidebarAccount you={you} />}
+                  />
+                )}
+              </AppLayoutSidebar>
             )}
-            {nav === 'tv-top' && (
-              <TvTabs
-                style={tvTopBar}
-                items={items}
-                footerItems={[settingsItem]}
-                accountItems={accountItems}
-              />
-            )}
-            <VersionPickerProvider>
-              <ItemMenuHost>
-                <GlideLayers name="page">
-                  {kept && (
-                    <motion.div
-                      key={kept}
-                      data-page="home"
-                      {...PAGE_FADE}
-                      inert={!onHome}
-                      className={cn(
-                        page,
-                        !onHome &&
-                          'absolute inset-x-0 top-0 [content-visibility:hidden]'
+            {shape === 'floating' &&
+              (nav === 'rail' ? (
+                <TouchRail
+                  items={items}
+                  footerItems={[settingsItem]}
+                  you={you}
+                  named={named}
+                  floating
+                />
+              ) : (
+                <TvRail
+                  items={items}
+                  footerItems={[settingsItem]}
+                  you={you}
+                  open={named}
+                  floating
+                />
+              ))}
+            <AppLayout>
+              <AppLayoutContent
+                style={
+                  nav === 'tv-top'
+                    ? ({
+                        '--top-bar': TOP_BAR_HEIGHT[tvTopBar],
+                      } as React.CSSProperties)
+                    : shape === 'floating'
+                      ? ({
+                          '--side-bar':
+                            FLOAT_GUTTER[nav === 'rail' ? 'touch' : 'tv'][
+                              named ? 'named' : 'icons'
+                            ],
+                        } as React.CSSProperties)
+                      : undefined
+                }
+                className={cn(
+                  shape === 'corner' &&
+                    (nav === 'rail'
+                      ? 'lg:[--top-bar:calc(1rem+3.875rem)]'
+                      : '[--top-bar:calc(1.5rem+3.875rem)]')
+                )}
+              >
+                {shape === 'corner' && (
+                  <CornerMenu
+                    items={items}
+                    footerItems={[settingsItem]}
+                    you={you}
+                    tv={nav === 'tv-rail'}
+                  />
+                )}
+                {nav === 'tv-top' && (
+                  <TvTabs
+                    style={tvTopBar}
+                    // A row of named tabs fills up; this one sits with the icons at its end.
+                    items={items.filter((i) => i !== together)}
+                    footerItems={[together, settingsItem]}
+                    you={you}
+                  />
+                )}
+                <VersionPickerProvider>
+                  <RemoteTarget />
+                  <RandomPick />
+                  {currentHost().watchNext && <WatchNextSync />}
+                  <ItemMenuHost>
+                    <GlideLayers name="page">
+                      {kept && (
+                        <motion.div
+                          key={kept}
+                          data-page="home"
+                          {...PAGE_FADE}
+                          inert={!onHome}
+                          className={cn(
+                            page,
+                            !onHome &&
+                              'invisible absolute inset-x-0 top-0 [content-visibility:hidden]'
+                          )}
+                        >
+                          <PageShown.Provider value={onHome}>
+                            <KeptHome />
+                          </PageShown.Provider>
+                          {onHome && <PageScroll />}
+                        </motion.div>
                       )}
-                    >
-                      <PageShown.Provider value={onHome}>
-                        <HomePage />
-                      </PageShown.Provider>
-                      {onHome && <PageScroll />}
-                    </motion.div>
-                  )}
-                  {!onHome && (
-                    <motion.div
-                      key={pathname}
-                      data-page={pageName(pathname)}
-                      {...PAGE_FADE}
-                      className={page}
-                    >
-                      <Outlet />
-                      <PageScroll />
-                    </motion.div>
-                  )}
-                </GlideLayers>
-              </ItemMenuHost>
-            </VersionPickerProvider>
-          </AppLayoutContent>
-        </AppLayout>
-      </AppLayout>
-      {!currentHost().tv && (
-        <MobileNav
-          items={items.filter(
-            (i) => i !== calendar && i !== activity && i !== downloads
+                      {!onHome && !playing && (
+                        <motion.div
+                          key={pathname}
+                          data-page={pageName(pathname)}
+                          {...PAGE_FADE}
+                          className={page}
+                        >
+                          <Outlet />
+                          <PageScroll />
+                        </motion.div>
+                      )}
+                    </GlideLayers>
+                  </ItemMenuHost>
+                </VersionPickerProvider>
+              </AppLayoutContent>
+            </AppLayout>
+          </AppLayout>
+          {!currentHost().tv && (
+            <MobileNav
+              items={items.filter(
+                (i) =>
+                  i !== calendar &&
+                  i !== activity &&
+                  i !== downloads &&
+                  i !== together
+              )}
+              places={[
+                ...(downloads ? [downloads] : []),
+                activity,
+                calendar,
+                together,
+              ]}
+              menuItems={several ? [settingsItem, switchItem] : [settingsItem]}
+              wide={nav === 'bar'}
+            />
           )}
-          places={[...(downloads ? [downloads] : []), activity, calendar]}
-          menuItems={[settingsItem, ...accountItems]}
-          wide={nav === 'bar'}
-        />
-      )}
-      <ConnectionNote />
-      <ConfirmationDialog {...confirmSignOut} />
-    </AppSidebarProvider>
+          <ConnectionNote />
+        </AppSidebarProvider>
+      </div>
+      {playing && <Outlet />}
+      <PartyHost />
+      <RemoteSheet />
+    </>
   );
+}
+
+/** What runs while pages are open, and stops while the player is. */
+function PagesWork({ pathname }: { pathname: string }) {
+  useDiscordBrowsing(pathname);
+  useDownloadRunner();
+  usePendingStops();
+  useAction('search', () => navigate(to.search()));
+  useAction('home', () => navigate(to.home));
+  return shellHost() ? <UpdatePrompt /> : null;
 }
 
 function select(item: SidebarItem) {
@@ -815,8 +822,8 @@ function MobileNav({
           trigger={
             <NavTab
               data-ui="mobile-nav-item"
-              aria-label="Account"
-              item={{ id: 'account', name: 'You', isCurrent: inMenu }}
+              aria-label={t`Account`}
+              item={{ id: 'account', name: t`You`, isCurrent: inMenu }}
               icon={<YouIcon />}
               className={tab}
             />
@@ -831,13 +838,13 @@ function MobileNav({
 function TouchRail({
   items,
   footerItems,
-  accountItems,
+  you,
   named,
   floating = false,
 }: {
   items: SidebarItem[];
   footerItems: SidebarItem[];
-  accountItems: SidebarItem[];
+  you: SidebarItem;
   named: boolean;
   floating?: boolean;
 }) {
@@ -860,21 +867,14 @@ function TouchRail({
     );
   };
   const account = (
-    <AccountMenu
-      side="right"
-      align="end"
-      sideOffset={8}
-      items={accountItems}
-      trigger={
-        <NavTab
-          data-ui="rail-item"
-          aria-label="Account"
-          item={{ id: 'account', name: 'You' }}
-          icon={<YouIcon />}
-          named={named}
-          className={tab}
-        />
-      }
+    <NavTab
+      data-ui="rail-item"
+      aria-label={you.name}
+      item={{ id: 'account', name: t`You` }}
+      icon={<YouIcon />}
+      named={named}
+      onClick={select(you)}
+      className={tab}
     />
   );
   if (floating) {
@@ -882,7 +882,7 @@ function TouchRail({
       <nav
         data-ui="touch-rail"
         data-shape="floating"
-        className="pointer-events-none fixed inset-y-0 left-0 z-50 hidden items-center py-4 pl-[calc(1rem+env(safe-area-inset-left))] lg:flex"
+        className="pointer-events-none fixed inset-y-0 start-0 z-50 hidden items-center py-4 ps-[calc(1rem+env(safe-area-inset-left))] lg:flex"
       >
         <BarSurface
           className={cn(
@@ -966,13 +966,13 @@ function NavEntry({
 function TvRail({
   items,
   footerItems,
-  accountItems,
+  you,
   open,
   floating = false,
 }: {
   items: SidebarItem[];
   footerItems: SidebarItem[];
-  accountItems: SidebarItem[];
+  you: SidebarItem;
   /** Always shows the names. */
   open: boolean;
   floating?: boolean;
@@ -981,8 +981,11 @@ function TvRail({
     open || !floating
       ? undefined
       : 'opacity-0 transition-opacity group-focus-within/rail:opacity-100';
-  // Shut, the clear panel is clipped to its icons; its buttons keep pointer events, which focus moves need.
-  const reach = !open && !floating && 'pointer-events-auto';
+  // Shut, the clear panel is clipped to its icons; its buttons keep pointer events and the icons' width, which focus moves need.
+  const reach =
+    !open &&
+    !floating &&
+    'pointer-events-auto w-14 group-focus-within/rail:w-full';
   const entry = (item: SidebarItem) => {
     const Icon = item.iconType;
     return (
@@ -997,24 +1000,18 @@ function TvRail({
     );
   };
   const account = (
-    <AccountMenu
-      side="right"
-      align="end"
-      sideOffset={8}
-      items={accountItems}
-      trigger={
-        <NavEntry
-          aria-label="Account"
-          item={{ id: 'account', name: 'You' }}
-          icon={<YouIcon />}
-          labelClassName={label}
-          className={cn('w-full', reach)}
-        />
-      }
+    <NavEntry
+      aria-label={you.name}
+      item={{ id: 'account', name: t`You` }}
+      icon={<YouIcon />}
+      onClick={select(you)}
+      labelClassName={label}
+      className={cn('w-full', reach)}
     />
   );
+  const divider = <div className="mx-3 my-1 h-px flex-none bg-white/10" />;
   const shade = !open && (
-    <div className="pointer-events-none fixed inset-y-0 left-0 -z-10 w-[36rem] bg-gradient-to-r from-black via-black/85 to-transparent opacity-0 transition-opacity duration-200 group-focus-within/rail:opacity-100" />
+    <div className="pointer-events-none fixed inset-y-0 start-0 -z-10 w-[36rem] bg-gradient-to-r from-black via-black/85 to-transparent rtl:bg-gradient-to-l opacity-0 transition-opacity duration-200 will-change-[opacity] group-focus-within/rail:opacity-100" />
   );
   if (floating) {
     return (
@@ -1022,10 +1019,10 @@ function TvRail({
         data-ui="tv-rail"
         data-shape="floating"
         data-nav-enter={ENTER_CURRENT}
-        data-nav-back="left"
+        data-nav-back="start"
         // Open, it covers the page's first column.
-        data-nav-exit="right"
-        className="group/rail fixed inset-y-0 left-0 z-50 flex items-center pl-6"
+        data-nav-exit="end"
+        className="group/rail fixed inset-y-0 start-0 z-50 flex items-center ps-6"
       >
         {shade}
         <BarSurface
@@ -1034,10 +1031,11 @@ function TvRail({
             open ? 'w-56' : 'w-[calc(4rem+2px)] group-focus-within/rail:w-56'
           )}
         >
-          {items.map(entry)}
-          <div className="mx-3 my-1 h-px flex-none bg-white/10" />
-          {footerItems.map(entry)}
           {account}
+          {divider}
+          {items.map(entry)}
+          {divider}
+          {footerItems.map(entry)}
         </BarSurface>
       </nav>
     );
@@ -1063,11 +1061,11 @@ function TvRail({
     <nav
       data-ui="tv-rail"
       data-nav-enter={ENTER_CURRENT}
-      data-nav-back="left"
+      data-nav-back="start"
       // Open, it covers the page beside it, which can leave nothing in line.
-      data-nav-exit="right"
+      data-nav-exit="end"
       className={cn(
-        'group/rail absolute inset-y-0 left-0',
+        'group/rail absolute inset-y-0 start-0',
         open
           ? 'w-full'
           : 'pointer-events-none w-64 focus-within:pointer-events-auto'
@@ -1078,15 +1076,16 @@ function TvRail({
         // The open panel fades in over these, as a changing width lays the page out every frame.
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 flex w-20 flex-col gap-1 px-3 py-8 transition-opacity duration-200 group-focus-within/rail:opacity-0"
+          className="pointer-events-none absolute inset-y-0 start-0 flex w-20 flex-col gap-1 px-3 py-8 transition-opacity duration-200 will-change-[opacity] group-focus-within/rail:opacity-0"
         >
           {logo}
+          {glyph({ id: 'account' }, <YouIcon />)}
+          {divider}
           {items.map((item) => glyph(item, item.iconType && <item.iconType />))}
           <div className="mt-auto flex flex-col gap-1">
             {footerItems.map((item) =>
               glyph(item, item.iconType && <item.iconType />)
             )}
-            {glyph({ id: 'account' }, <YouIcon />)}
           </div>
         </div>
       )}
@@ -1094,14 +1093,15 @@ function TvRail({
         className={cn(
           'flex h-full flex-col gap-1 px-3 py-8',
           !open &&
-            'opacity-0 transition-opacity duration-200 [clip-path:inset(0_calc(100%-5rem)_0_0)] group-focus-within/rail:opacity-100 group-focus-within/rail:[clip-path:none]'
+            'opacity-0 transition-opacity duration-200 will-change-[opacity] [clip-path:inset(0_calc(100%-5rem)_0_0)] group-focus-within/rail:opacity-100 group-focus-within/rail:[clip-path:none]'
         )}
       >
         {logo}
+        {account}
+        {divider}
         {items.map(entry)}
         <div className="mt-auto flex flex-col gap-1">
           {footerItems.map(entry)}
-          {account}
         </div>
       </div>
     </nav>
@@ -1119,12 +1119,12 @@ const CORNER_SHUT = 62;
 function CornerMenu({
   items,
   footerItems,
-  accountItems,
+  you,
   tv,
 }: {
   items: SidebarItem[];
   footerItems: SidebarItem[];
-  accountItems: SidebarItem[];
+  you: SidebarItem;
   tv: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
@@ -1150,6 +1150,18 @@ function CornerMenu({
     return () => observer.disconnect();
   }, [shown?.id]);
   const label = cn('transition-opacity duration-300', !open && 'opacity-0');
+  const divider = <div className="mx-3 my-1 h-px flex-none bg-white/10" />;
+  const account = (
+    <NavEntry
+      aria-label={you.name}
+      item={{ id: 'account', name: t`You` }}
+      icon={<YouIcon />}
+      onClick={select(you)}
+      labelClassName={label}
+      inert={!open}
+      className="w-full ps-3 pe-5"
+    />
+  );
   const entry = (item: SidebarItem) => {
     const Icon = item.iconType;
     return (
@@ -1165,7 +1177,7 @@ function CornerMenu({
           select(item)(e);
         }}
         // Shut, the icon sits in the middle of the round button.
-        className={cn('w-full pl-3 pr-5', !open && 'bg-transparent')}
+        className={cn('w-full ps-3 pe-5', !open && 'bg-transparent')}
       />
     );
   };
@@ -1175,15 +1187,15 @@ function CornerMenu({
       data-open={open || undefined}
       data-nav-enter={ENTER_CURRENT}
       data-nav-back="up"
-      data-nav-exit="right"
+      data-nav-exit="end"
       // Focus moving within, or into the account menu, blurs then focuses in one go.
       onFocus={() => usingKeys() && setOpen(true)}
       onBlur={() => usingKeys() && setOpen(false)}
       className={cn(
         'z-40 transition-transform duration-200 ease-out',
         tv
-          ? 'absolute left-6 top-6 [[data-in-rows]_&]:-translate-y-[180%]'
-          : 'fixed left-[calc(1rem+env(safe-area-inset-left))] top-[calc(1rem+env(safe-area-inset-top))] hidden lg:block'
+          ? 'absolute start-6 top-6 [[data-in-rows]_&]:-translate-y-[180%]'
+          : 'fixed start-[calc(1rem+env(safe-area-inset-left))] top-[calc(1rem+env(safe-area-inset-top))] hidden lg:block'
       )}
     >
       <div
@@ -1204,30 +1216,17 @@ function CornerMenu({
       >
         <div
           ref={list}
-          className="absolute left-0 top-0 flex w-max min-w-48 flex-col gap-1 p-1.5 transition-transform duration-300 ease-out"
+          className="absolute start-0 top-0 flex w-max min-w-48 flex-col gap-1 p-1.5 transition-transform duration-300 ease-out"
           style={{
             transform: open ? undefined : `translateY(${-size.shift}px)`,
           }}
         >
+          {tv && account}
+          {tv && divider}
           {items.map(entry)}
-          <div className="mx-3 my-1 h-px flex-none bg-white/10" />
+          {divider}
           {footerItems.map(entry)}
-          <AccountMenu
-            side="right"
-            align="start"
-            sideOffset={8}
-            items={accountItems}
-            trigger={
-              <NavEntry
-                aria-label="Account"
-                item={{ id: 'account', name: 'You' }}
-                icon={<YouIcon />}
-                labelClassName={label}
-                inert={!open}
-                className="w-full pl-3 pr-5"
-              />
-            }
-          />
+          {!tv && account}
         </div>
       </BarSurface>
     </nav>
@@ -1249,12 +1248,12 @@ function TvTabs({
   style,
   items,
   footerItems,
-  accountItems,
+  you,
 }: {
   style: TvTopBar;
   items: SidebarItem[];
   footerItems: SidebarItem[];
-  accountItems: SidebarItem[];
+  you: SidebarItem;
 }) {
   const tab = (item: SidebarItem) => {
     const Icon = item.iconType;
@@ -1264,7 +1263,7 @@ function TvTabs({
         item={item}
         icon={Icon && <Icon />}
         onClick={select(item)}
-        className="pr-5"
+        className="pe-5"
       />
     );
   };
@@ -1285,19 +1284,12 @@ function TvTabs({
           />
         );
       })}
-      <AccountMenu
-        side="bottom"
-        align="end"
-        sideOffset={8}
-        items={accountItems}
-        trigger={
-          <NavEntry
-            aria-label="Account"
-            item={{ id: 'account', name: 'You' }}
-            icon={<YouIcon />}
-            labelClassName="hidden"
-          />
-        }
+      <NavEntry
+        aria-label={you.name}
+        item={{ id: 'account', name: t`You` }}
+        icon={<YouIcon />}
+        onClick={select(you)}
+        labelClassName="hidden"
       />
     </>
   );
@@ -1362,7 +1354,7 @@ export function PageBody({ children }: { children: React.ReactNode }) {
   return (
     <div
       data-ui="page-body"
-      className="relative z-[1] space-y-8 px-4 pb-16 pt-[calc(1.5rem+env(safe-area-inset-top))] lg:pl-0 lg:pr-10 lg:pt-[calc(2.5rem+env(safe-area-inset-top))]"
+      className="relative z-[1] space-y-8 px-4 pb-16 pt-[calc(1.5rem+env(safe-area-inset-top))] lg:ps-0 lg:pe-10 lg:pt-[calc(2.5rem+env(safe-area-inset-top))]"
     >
       {children}
     </div>
@@ -1377,7 +1369,7 @@ export function PageMessage({ children }: { children: React.ReactNode }) {
     <div
       data-ui="page-message"
       className={cn(
-        'relative z-[1] flex flex-col justify-center px-4 py-10 lg:pl-0 lg:pr-10',
+        'relative z-[1] flex flex-col justify-center px-4 py-10 lg:ps-0 lg:pe-10',
         FILL_WINDOW
       )}
     >

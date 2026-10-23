@@ -1,10 +1,7 @@
 import type { JellyfinClient } from '../client';
 import type { DownloadsHost } from '../downloads/types';
-import type {
-  NativePlayerOptions,
-  PlayerController,
-  PlayerFeature,
-} from '../playback/controller';
+import type { PlayerFeature } from '../playback/controller';
+import type { EngineFactory } from '../playback/engine';
 import type { BaseItemDto, SourceInfo } from '../types';
 import { androidHost } from './jellyfin-android';
 import { jellyfinDesktopHost } from './jellyfin-desktop';
@@ -24,6 +21,30 @@ export interface NowPlaying {
   paused: boolean;
 }
 
+/** A title on the system's own row of what to watch next. */
+export interface WatchNextItem {
+  id: string;
+  kind: 'movie' | 'episode';
+  /** The show's, for an episode. */
+  title: string;
+  episodeTitle?: string;
+  season?: number;
+  episode?: number;
+  description?: string;
+  /** Landscape, which the row shows. */
+  image?: string;
+  positionMs: number;
+  durationMs?: number;
+  playedAt?: number;
+  link: string;
+}
+
+/** A sound level from 0 to 1, and the words so far. */
+export interface Hearing {
+  level: number;
+  text: string | null;
+}
+
 /**
  * The app the page runs in, from the bridge it injects. Anything left out
  * falls back to what a browser does.
@@ -35,8 +56,8 @@ export interface Host {
   tv?: boolean;
   /** The app's own name for this device, and its id where its player reports as it. */
   device?(): { id?: string; name?: string } | null;
-  /** A player drawn beneath the page. */
-  usePlayer?(opts: NativePlayerOptions): PlayerController;
+  /** A player drawn beneath the page, in place of the page's own video. */
+  player?: EngineFactory;
   playerFeatures?: readonly PlayerFeature[];
   /** The app's own player takes over from the page and plays on through the `next` item ids. */
   play?(
@@ -73,10 +94,19 @@ export interface Host {
   signedIn?(client: JellyfinClient): void;
   /** Saves what the page asks for to the device. */
   downloads?: DownloadsHost;
+  /** A YouTube video's stream, which only plays from the address that asked. */
+  resolveYouTube?(id: string): Promise<string | null>;
+  /** Shows these above the on-screen keyboard's keys, for the field it types into. */
+  keyboardCompletions?(names: string[]): void;
   /** What the device's speech recogniser heard, or null for nothing. */
-  listen?(): Promise<string | null>;
+  listen?(opts: {
+    hearing(heard: Hearing): void;
+    signal: AbortSignal;
+  }): Promise<string | null>;
   /** Saves a file the page made, for a web view that drops download links. */
   saveFile?(name: string, type: string, text: string): void;
+  /** Replaces what the system's row of what to watch next shows from this app. */
+  watchNext?(items: WatchNextItem[]): void;
 }
 
 const browserHost: Host = { name: 'browser' };

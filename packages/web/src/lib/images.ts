@@ -51,12 +51,31 @@ export function posterUrl(
     );
   }
   if (item.Type === 'Season') {
+    const own = item.ImageTags?.Primary;
+    // A season showing its show's poster asks for the show's, which every such season then shares.
     return (
-      image(client, item.Id, 'Primary', item.ImageTags?.Primary, size) ??
+      (own !== item.SeriesPrimaryImageTag
+        ? image(client, item.Id, 'Primary', own, size)
+        : null) ??
       image(client, item.SeriesId, 'Primary', item.SeriesPrimaryImageTag, size)
     );
   }
   return image(client, item.Id, 'Primary', item.ImageTags?.Primary, size);
+}
+
+/** A card's images, best first: a landscape card takes the landscape art made for it before the poster. */
+export function cardImages(
+  client: JellyfinClient,
+  item: BaseItemDto,
+  shape: 'poster' | 'landscape' | 'square',
+  size?: Size
+): string[] {
+  return [
+    shape === 'landscape'
+      ? image(client, item.Id, 'Thumb', item.ImageTags?.Thumb, size)
+      : null,
+    posterUrl(client, item, size),
+  ].filter((url): url is string => !!url);
 }
 
 /** A landscape still: an episode's own, else a thumb or backdrop. */
@@ -132,6 +151,12 @@ export function logoUrl(
     image(client, item.Id, 'Logo', item.ImageTags?.Logo, size) ??
     image(client, item.ParentLogoItemId, 'Logo', item.ParentLogoImageTag, size)
   );
+}
+
+export function animatedPosterOf(item: BaseItemDto): string | undefined {
+  const url = (item as { aiostreams?: { animatedPoster?: unknown } }).aiostreams
+    ?.animatedPoster;
+  return typeof url === 'string' ? url : undefined;
 }
 
 /** The shape a collection's own art was made for; everything else is a poster. */

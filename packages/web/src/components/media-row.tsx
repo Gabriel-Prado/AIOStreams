@@ -10,15 +10,18 @@ import {
 } from '@aiostreams/ui/carousel';
 import { Skeleton } from '@aiostreams/ui/skeleton';
 import { cn } from '@aiostreams/ui/core/styling';
+import { useMediaQuery } from '@aiostreams/ui/hooks/media-query';
 import { currentHost } from '../lib/hosts';
+import { scrolled, scrollToStart, startOf } from '../lib/direction';
 import {
   settings,
   useSetting,
   type PosterLine,
   type PosterSize,
 } from '../lib/settings';
-import { RowScroller, ScrollRoot, watch } from '../lib/use-in-view';
-import { GLIDE_MS } from '../lib/input/glide';
+import { onScreen, RowScroller, ScrollRoot, watch } from '../lib/use-in-view';
+import { keyboardFocus } from '../lib/input';
+import { easeLayers, GLIDE_LAYERS } from '../lib/input/glide';
 
 /**
  * Each shape's card width, narrowed where a box sets `--row-card-h` so its
@@ -42,6 +45,7 @@ export type RowShape = keyof typeof ITEM_WIDTH;
 
 /** A poster caption's height, which a `--row-card-h` cap leaves room for. */
 const posterText = (lines: PosterLine[]) =>
+  // eslint-disable-next-line lingui/no-unlocalized-strings -- CSS
   `calc(${lines.length ? '0.5rem' : '0rem'}${lines.includes('title') ? ' + 1.25rem' : ''}${lines.includes('year') ? ' + 1rem' : ''})`;
 
 const reducedMotion =
@@ -50,16 +54,19 @@ const reducedMotion =
     : null;
 
 // Script animations, as CSS ones send each card's start and end through the
-// page's event handling.
+// page's event handling. Only cards on screen: an unseen start or end still
+// costs a frame.
 const CARD_IN = Array.from(
   { length: 20 },
-  (_, i) => (el: HTMLElement | null) =>
-    void el?.animate(
+  (_, i) => (el: HTMLElement | null) => {
+    if (!el || !onScreen(el)) return;
+    el.animate(
       reducedMotion?.matches
         ? { opacity: [0, 1] }
         : { opacity: [0, 1], transform: ['translateY(8px)', 'none'] },
       { duration: 300, delay: i * 25, easing: 'ease-out', fill: 'backwards' }
-    )
+    );
+  }
 );
 
 /** Cards fade in a little after one another, a page at a time. */
@@ -193,11 +200,12 @@ function useMarkOutOfView(
   box: React.RefObject<HTMLElement | null>,
   count: number,
   root: React.RefObject<Element | null> | Element | null,
-  rootMargin?: string
+  rootMargin?: string,
+  enabled = true
 ) {
   React.useEffect(() => {
     const cards = box.current?.children;
-    if (!cards) return;
+    if (!cards || !enabled) return;
     const stops = [...cards].map((card) =>
       watch(
         card,
@@ -207,7 +215,7 @@ function useMarkOutOfView(
       )
     );
     return () => stops.forEach((stop) => stop());
-  }, [box, count, root, rootMargin]);
+  }, [box, count, root, rootMargin, enabled]);
 }
 
 const savedScroll = new Map<string, number>();
@@ -215,17 +223,13 @@ const savedScroll = new Map<string, number>();
 /** The room after a focused card in a TV row; a card's padding leaves the room before. */
 const ROOM = 16;
 
-/**
- * Layers the glides take turns on, as nested transforms add up: a glide under
- * way carries on, where reading its place back comes out stale and jerks the
- * row. Three cover a held key's repeats.
- */
-const GLIDE_LAYERS = 3;
+/** Keys, a remote or a gamepad keep focus where a row's first card starts, until its end. */
+const anchored = () => !!keyboardFocus();
 
 /**
- * A TV's row: a plain scroller, as Embla's measuring and scripted easing are
- * too much for a TV's CPU. Focus jumps it, and an animated transform eases the
- * jump on the compositor.
+ * A TV's or touch screen's row: a plain scroller, as Embla's measuring and
+ * scripted easing are too much for a TV's CPU and stutter a swipe. Focus jumps
+ * it, and an animated transform eases the jump on the compositor.
  */
 function NativeRow({
   restoreKey,
@@ -246,7 +250,7 @@ function NativeRow({
 }) {
   const ref = React.useRef<HTMLDivElement>(null);
   const content = React.useRef<HTMLDivElement>(null);
-  const layers = React.useRef<HTMLDivElement[]>([]);
+  const layer = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -254,7 +258,10 @@ function NativeRow({
     const card = content.current?.children[start];
     if (saved !== undefined) el.scrollLeft = saved;
     else if (start && card instanceof HTMLElement && content.current)
-      el.scrollLeft = content.current.offsetLeft + card.offsetLeft;
+      scrollToStart(
+        el,
+        startOf(content.current, el) + startOf(card, content.current)
+      );
     // Once, as the carousel reads its start once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -262,8 +269,6 @@ function NativeRow({
     const el = ref.current;
     const row = content.current;
     if (!el || !row) return;
-    const glides: (Animation | undefined)[] = [];
-    let next = 0;
     const follow = (e: FocusEvent) => {
       const card =
         e.target instanceof Element
@@ -271,31 +276,27 @@ function NativeRow({
           : null;
       if (!(card instanceof HTMLElement) || card.parentElement !== row) return;
       // Layout's own offsets, which a glide under way leaves alone.
-      const left = row.offsetLeft + card.offsetLeft;
+      const left = startOf(row, el) + startOf(card, row);
       const right = left + card.offsetWidth;
-      const from = el.scrollLeft;
-      const to =
-        left < from
+      const from = scrolled(el);
+      const to = anchored()
+        ? Math.min(
+            startOf(card, row) -
+              startOf(row.firstElementChild as HTMLElement, row),
+            el.scrollWidth - el.clientWidth
+          )
+        : left < from
           ? left
           : right + ROOM > from + el.clientWidth
             ? Math.min(right + ROOM - el.clientWidth, left)
             : from;
       if (to === from) return;
-      el.scrollLeft = to;
-      const moved = el.scrollLeft - from;
-      const layer = layers.current[next];
-      glides[next]?.finish();
-      glides[next] = layer?.animate(
-        [{ transform: `translateX(${moved}px)` }, { transform: 'none' }],
-        { duration: GLIDE_MS, easing: 'ease-out' }
-      );
-      next = (next + 1) % GLIDE_LAYERS;
+      const was = el.scrollLeft;
+      scrollToStart(el, to);
+      if (layer.current) easeLayers(layer.current, 'X', el.scrollLeft - was);
     };
     el.addEventListener('focusin', follow);
-    return () => {
-      for (const glide of glides) glide?.cancel();
-      el.removeEventListener('focusin', follow);
-    };
+    return () => el.removeEventListener('focusin', follow);
   }, []);
   React.useEffect(() => {
     const el = ref.current;
@@ -303,7 +304,7 @@ function NativeRow({
     const check = () => {
       if (restoreKey) savedScroll.set(restoreKey, el.scrollLeft);
       const range = el.scrollWidth - el.clientWidth;
-      if (onEnd && (range <= 1 || el.scrollLeft / range > 0.7)) onEnd();
+      if (onEnd && (range <= 1 || scrolled(el) / range > 0.7)) onEnd();
       const row = content.current;
       const [first, second] = row?.children ?? [];
       if (
@@ -314,8 +315,8 @@ function NativeRow({
       )
         return;
       // The cards are all one width.
-      const pitch = second.offsetLeft - first.offsetLeft;
-      const from = el.scrollLeft - row.offsetLeft - first.offsetLeft;
+      const pitch = startOf(second, row) - startOf(first, row);
+      const from = scrolled(el) - startOf(row, el) - startOf(first, row);
       if (pitch > 0)
         onView(
           Math.floor(from / pitch),
@@ -330,22 +331,22 @@ function NativeRow({
       el.removeEventListener('scroll', check);
     };
   }, [restoreKey, onEnd, onView, count]);
-  useMarkOutOfView(content, count, ref);
+  useMarkOutOfView(content, count, ref, undefined, !!currentHost().tv);
   return (
     <div
       ref={ref}
       data-nav-self-scroll
       className={cn(
         CarouselAnatomy.content(),
-        'relative -mr-4 overflow-x-auto overflow-y-hidden lg:-mr-10'
+        // Room for a focused card's ring, which the scroller clips; the row pads its start.
+        'relative -mb-1.5 -me-4 -ms-1.5 overflow-x-auto overflow-y-hidden pb-1.5 [scrollbar-width:none] lg:-me-10 [&::-webkit-scrollbar]:hidden'
       )}
     >
       {Array.from({ length: GLIDE_LAYERS }).reduceRight<React.ReactNode>(
         (inside, _, i) => (
           <div
-            ref={(el) => {
-              if (el) layers.current[i] = el;
-            }}
+            ref={i === 0 ? layer : undefined}
+            data-glide-layer
             // Kept as layers, since one made as a glide starts draws nothing for a frame.
             className="will-change-transform"
           >
@@ -354,10 +355,11 @@ function NativeRow({
         ),
         <div
           ref={content}
+          data-nav-row
           className={cn(
             CarouselAnatomy.innerContent({ gap: 'md' }),
             // A scroller leaves the last card's margin out of its end.
-            "relative mt-3 after:shrink-0 after:basis-4 after:content-['']"
+            "relative mt-3 ps-1.5 after:shrink-0 after:basis-4 after:content-['']"
           )}
         >
           <RowScroller.Provider value={ref}>{children}</RowScroller.Provider>
@@ -391,7 +393,7 @@ export function MediaRow({
   /** Replaces the shape's card width, for rows of something else. */
   itemClass?: string;
   loading?: boolean;
-  /** Not fetching yet, so its placeholders hold still rather than pulse unseen. */
+  /** Not fetching yet, out of sight, so one still placeholder holds its place. */
   waiting?: boolean;
   loadingMore?: boolean;
   onEndReached?: () => void;
@@ -403,12 +405,14 @@ export function MediaRow({
 }) {
   const restoreKey = useEntryKey(id);
   const [start] = React.useState(startIndex ?? 0);
-  const [lines] = useSetting(settings.posterLines);
+  const [lines] = useSetting(settings.interface.posterLines);
   const width = itemClass ?? ITEM_WIDTH[shape];
   const items = React.Children.toArray(children);
   const { drawn, fades, onView } = useWindow(items.length, start, !!loading);
+  // A finger scrolls a plain scroller on the compositor; Embla is for a mouse to drag.
+  const touch = useMediaQuery('(pointer: coarse)');
   if (!loading && !items.length) return null;
-  const native = !!currentHost().tv;
+  const native = !!currentHost().tv || touch;
   const skeletons = (count: number) =>
     Array.from({ length: count }, (_, i) => (
       <Slide key={`skeleton-${i}`} className={width}>
@@ -423,7 +427,7 @@ export function MediaRow({
     ));
   const cards = [
     ...(loading
-      ? skeletons(8)
+      ? skeletons(waiting ? 1 : 8)
       : items.map((child, i) =>
           drawn(i) ? (
             <Slide key={i} className={width}>
@@ -436,20 +440,18 @@ export function MediaRow({
     ...(!loading && loadingMore ? skeletons(4) : []),
   ];
   const head = (
-    <div className="-mr-4 flex items-center justify-between gap-3 pr-4 lg:-mr-10">
+    <div className="-me-4 flex items-center justify-between gap-3 pe-4 lg:-me-10">
       {title ? (
         <h2
           data-ui="media-row-title"
-          data-nav-tv="skip"
+          data-nav="skip"
           // Room inside the truncating box for a link's focus outline.
           className="-m-1 min-w-0 truncate p-1 text-lg font-semibold sm:text-xl"
         >
           {title}
         </h2>
       ) : (
-        <div data-nav-tv="skip" className="min-w-0">
-          {header}
-        </div>
+        <div className="min-w-0">{header}</div>
       )}
       <div className="flex flex-none items-center gap-2">
         {action && (
@@ -469,6 +471,7 @@ export function MediaRow({
       data-shape={shape}
       data-nav-group
       data-nav-box
+      data-nav-resume
       style={{ '--poster-text': posterText(lines) } as React.CSSProperties}
     >
       {native ? (
@@ -488,14 +491,15 @@ export function MediaRow({
         <Carousel
           opts={{ align: 'start', dragFree: true, startIndex: start }}
           restoreKey={restoreKey}
+          anchor={anchored}
         >
           {onEndReached && <EndWatcher onEnd={onEndReached} />}
           {onView && <ViewWatcher onView={onView} />}
           {head}
           {/* Embla counts the last card's margin as the row's end gap. */}
           <CarouselContent
-            contentClass="-mr-4 lg:-mr-10"
-            className="mt-3 [&>*:last-child]:mr-4"
+            contentClass="-mb-1.5 -me-4 -ms-1.5 pb-1.5 lg:-me-10"
+            className="mt-3 ps-1.5 [&>*:last-child]:me-4"
           >
             {cards}
           </CarouselContent>
@@ -530,13 +534,14 @@ export function CardGrid({
   shape?: RowShape;
   children: React.ReactNode;
 }) {
-  const [size] = useSetting(settings.posterSize);
+  const [size] = useSetting(settings.interface.posterSize);
   const grid = React.useRef<HTMLDivElement>(null);
   // Half a screen past each edge, so the next row down is still weighed.
   useMarkOutOfView(
     grid,
     React.Children.count(children),
     React.useContext(ScrollRoot),
+    // eslint-disable-next-line lingui/no-unlocalized-strings -- a root margin
     '50% 0px'
   );
   return (

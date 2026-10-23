@@ -1,3 +1,4 @@
+import { t } from '@lingui/core/macro';
 import { storage } from './storage';
 import { JellyfinClient } from './client';
 import { clearCredentials, readCredentials } from './credentials';
@@ -47,6 +48,19 @@ export function forgetServer(base: string): void {
 
 export function serverAddress(base: string): string {
   return base.replace(/^https?:\/\//, '');
+}
+
+/** Whether two addresses name one server, whatever their case or trailing slash. */
+export function sameServer(a: string, b: string): boolean {
+  const plain = (address: string) => {
+    try {
+      const url = new URL(address);
+      return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+    } catch {
+      return address;
+    }
+  };
+  return plain(a) === plain(b);
 }
 
 interface PublicInfo {
@@ -140,10 +154,10 @@ export async function findServer(input: string): Promise<SavedServer> {
   try {
     url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
   } catch {
-    throw new Error('That is not a valid address.');
+    throw new Error(t`That is not a valid address.`);
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('The address must start with http:// or https://.');
+    throw new Error(t`The address must start with http:// or https://.`);
   }
   const path = url.pathname
     .replace(/\/+$/, '')
@@ -153,5 +167,5 @@ export async function findServer(input: string): Promise<SavedServer> {
     const info = await publicInfo(base);
     if (info?.Id) return { base, ...labelOf(info, base), lastUsed: Date.now() };
   }
-  throw new Error('No server answered at that address.');
+  throw new Error(t`No server answered at that address.`);
 }

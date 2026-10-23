@@ -17,8 +17,9 @@ use std::sync::{Arc, Mutex};
 use aiostreams_desktop_core::bridge::{Inbound, Outbound, PROTOCOL_VERSION, origin};
 use aiostreams_desktop_core::downloads::{self, Downloads};
 use aiostreams_desktop_core::external::{self, External};
+use aiostreams_desktop_core::playback::{self, PlayerState};
 use aiostreams_desktop_core::player::Player;
-use aiostreams_desktop_core::{discord, now_playing};
+use aiostreams_desktop_core::{discord, now_playing, thumbnails};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use updates::{Command, Updater};
@@ -148,8 +149,15 @@ pub struct Served {
     pub body: Vec<u8>,
 }
 
-/// Serves the web app's files; a path without an extension is one of its routes.
+/// Serves the web app's files and thumbnails; a path without an extension is one of its routes.
 pub fn serve(root: Option<&Path>, path: &str) -> Served {
+    if let Some(body) = thumbnails::image(path) {
+        return Served {
+            status: 200,
+            content_type: "image/jpeg",
+            body,
+        };
+    }
     let not_found = Served {
         status: 404,
         content_type: "text/plain",
@@ -368,15 +376,22 @@ pub fn start_player(
     platform::load_vulkan_loader(library);
     let awake = Mutex::new(Awake::default());
     let emit = move |message: Outbound| {
-        if let Outbound::MpvProp { name, data, .. } = &message
+        if let Outbound::PlayerState { state, .. } = &message
             && let Ok(mut awake) = awake.lock()
         {
-            awake.update(name, data);
+            awake.update(state);
+        }
+        if let Outbound::VideoColour { gamma, primaries } = message {
+            platform::update_hdr(gamma, primaries);
+            return;
         }
         now_playing::observe(&message);
         emit(message)
     };
-    Player::start(library, &defaults, &required, Arc::new(emit))
+    let sized = std::fs::read_to_string(mpv_dir.join("mpv.conf"))
+        .is_ok_and(|c| c.contains("demuxer-max-bytes"));
+    let auto_cache = (!sized).then(|| playback::auto_cache(platform::total_memory()));
+    Player::start(library, &defaults, &required, auto_cache, Arc::new(emit))
         .unwrap_or_else(|e| platform::fatal(&format!("mpv failed to start: {e}")))
 }
 
@@ -439,12 +454,12 @@ impl Default for Awake {
 }
 
 impl Awake {
-    fn update(&mut self, name: &str, data: &serde_json::Value) {
-        match name {
-            "pause" => self.paused = data == true,
-            "idle-active" => self.idle = data == true,
-            _ => return,
+    fn update(&mut self, state: &PlayerState) {
+        if state.paused.is_none() && state.idle.is_none() {
+            return;
         }
+        self.paused = state.paused.unwrap_or(self.paused);
+        self.idle = state.idle.unwrap_or(self.idle);
         let on = !self.paused && !self.idle;
         if on != self.on {
             self.on = on;
@@ -469,36 +484,130 @@ pub fn handle(
     };
     let player = player.borrow();
     match message {
-        Inbound::MpvCommand {
-            args,
+        Inbound::PlayerLoad {
+            load,
             external: to_external,
         } => {
             let local = |path: &str| downloads.is_local(path);
             let done = if to_external {
-                Some(external.command(&args, &local))
+                Some(external.load(&load, &local))
             } else {
-                player.as_ref().map(|p| p.command(&args, &local))
+                player.as_ref().map(|p| p.load(&load, &local))
             };
             if let Some(Err(e)) = done {
-                fail(format!("mpv command {args:?}: {e}"));
+                fail(format!("player-load: {e}"));
             }
         }
-        Inbound::MpvSetProp {
-            name,
-            value,
+        Inbound::PlayerStop { external: true } => external.stop(),
+        Inbound::PlayerStop { external: false } => {
+            if let Some(p) = player.as_ref() {
+                p.stop();
+            }
+        }
+        Inbound::PlayerSet {
+            change,
             external: to_external,
         } => {
             let done = if to_external {
-                Some(external.set_prop(&name, &value))
+                Some(external.change(&change))
             } else {
-                player.as_ref().map(|p| p.set_prop(&name, &value))
+                player.as_ref().map(|p| p.change(&change))
             };
             if let Some(Err(e)) = done {
-                fail(format!("mpv set {name}={value}: {e}"));
+                fail(format!("player-set: {e}"));
             }
         }
-        Inbound::MpvSync { external: true } => external.sync(),
-        Inbound::MpvSync { external: false } => send(UserEvent::Sync),
+        Inbound::PlayerSeek {
+            position_ms,
+            external: true,
+        } => external.seek(position_ms),
+        Inbound::PlayerSeek { position_ms, .. } => {
+            if let Some(p) = player.as_ref() {
+                p.seek(position_ms);
+            }
+        }
+        Inbound::PlayerSubtitleAdd {
+            url,
+            title,
+            language,
+            external: to_external,
+        } => {
+            let local = |path: &str| downloads.is_local(path);
+            let done = if to_external {
+                Some(external.add_subtitle_url(&url, &title, &language, &local))
+            } else {
+                player
+                    .as_ref()
+                    .map(|p| p.add_subtitle_url(&url, &title, &language, &local))
+            };
+            if let Some(Err(e)) = done {
+                fail(format!("player-subtitle-add: {e}"));
+            }
+        }
+        Inbound::PlayerStyle(mut style) => {
+            style.fit = platform::fit_video(style.fit);
+            if let Some(Err(e)) = player.as_ref().map(|p| p.style(&style)) {
+                fail(format!("player-style: {e}"));
+            }
+        }
+        Inbound::PlayerStatsOverlay {
+            page,
+            external: to_external,
+        } => {
+            let done = if to_external {
+                Some(external.stats_overlay(page.as_deref()))
+            } else {
+                player.as_ref().map(|p| p.stats_overlay(page.as_deref()))
+            };
+            if let Some(Err(e)) = done {
+                fail(format!("player-stats-overlay: {e}"));
+            }
+        }
+        Inbound::PlayerSubtitleLines { track } => {
+            if let Some(Err(e)) = player.as_ref().map(|p| p.subtitle_lines(track.as_deref())) {
+                fail(format!("player-subtitle-lines: {e}"));
+            }
+        }
+        Inbound::PlayerSubtitleIndex => match player.as_ref() {
+            Some(p) => p.subtitle_index(),
+            None => emit(Outbound::PlayerSubtitleIndex { tracks: None }),
+        },
+        Inbound::PlayerThumbnail {
+            url,
+            headers,
+            position_ms,
+            showing_ms,
+        } => {
+            let local = |path: &str| downloads.is_local(path);
+            let done = player
+                .as_ref()
+                .map(|p| p.thumbnail(&url, &headers, position_ms, showing_ms, &local));
+            if let Some(Err(e)) = done {
+                fail(format!("player-thumbnail: {e}"));
+            }
+        }
+        Inbound::PlayerSync { external: true } => external.sync(),
+        Inbound::PlayerSync { external: false } => send(UserEvent::Sync),
+        Inbound::PlayerKey { key } => {
+            if let Some(Err(e)) = player.as_ref().map(|p| p.keypress(&key)) {
+                fail(format!("player-key: {e}"));
+            }
+        }
+        Inbound::PlayerSettings(settings) => {
+            if let Some(p) = player.as_ref() {
+                p.settings(&settings);
+            }
+        }
+        Inbound::YoutubeResolve { request, id } => {
+            if let Some(p) = player.as_ref() {
+                p.resolve_youtube(request, id);
+            }
+        }
+        Inbound::AudioDevices => {
+            if let Some(p) = player.as_ref() {
+                p.audio_devices();
+            }
+        }
         Inbound::SubtitleFile {
             name,
             data,
@@ -545,7 +654,24 @@ pub fn handle(
                 platform: platform::PLATFORM,
                 mpv,
                 ffmpeg,
+                ac3_encoder: player.as_ref().is_some_and(Player::ac3_encoder),
             });
+        }
+        Inbound::VideoOutput { output } => {
+            if let Some(output) = output {
+                platform::choose_video_output(&output);
+            }
+            let (outputs, running, chosen) = platform::video_outputs();
+            emit(Outbound::VideoOutput {
+                outputs,
+                running,
+                chosen,
+            });
+        }
+        Inbound::Restart => {
+            if platform::relaunch() {
+                send(UserEvent::Close);
+            }
         }
         Inbound::OpenMpvConfig => platform::open_external(&paths.mpv.to_string_lossy()),
         Inbound::OpenLogs => platform::open_external(&paths.logs.to_string_lossy()),

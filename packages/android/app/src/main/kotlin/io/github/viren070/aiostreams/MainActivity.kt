@@ -9,16 +9,17 @@ import android.app.NotificationManager
 import android.app.UiModeManager
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
-import android.speech.RecognizerIntent
 import android.util.Log
 import android.hardware.input.InputManager
 import android.view.InputDevice
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -26,6 +27,7 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.addCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,20 +41,27 @@ import io.github.viren070.aiostreams.bridge.AppIdentity
 import io.github.viren070.aiostreams.bridge.WebApp
 import io.github.viren070.aiostreams.downloads.DownloadChannel
 import io.github.viren070.aiostreams.mpv.MpvEngine
+import io.github.viren070.aiostreams.playback.Change
 import io.github.viren070.aiostreams.playback.PlayerChannel
+import io.github.viren070.aiostreams.playback.PlayerProtocol
+import io.github.viren070.aiostreams.playback.Sound
+import `is`.xyz.mpv.AudioEncoder
 import java.io.File
 import java.util.UUID
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /** The video beneath, the page over it, and the bridge between them. */
 class MainActivity : ComponentActivity() {
-    private lateinit var web: WebView
+    private lateinit var web: CompletingWebView
     private lateinit var bridge: AppBridge
     private lateinit var playback: Playback
     private lateinit var player: PlayerChannel
@@ -60,10 +69,20 @@ class MainActivity : ComponentActivity() {
     private lateinit var updater: Updater
     private lateinit var pip: PictureInPicture
     private lateinit var focus: AudioFocus
+    private lateinit var passthrough: Passthrough
+    private val youtube = YouTube { message -> runOnUiThread { bridge.send(message) } }
     private lateinit var controller: ListenableFuture<MediaController>
     private val screen = PlayerWindow(this)
     private val levels by lazy { Levels(this) }
-    private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    private val watchNext by lazy { WatchNext(this) }
+    private val trustedRoots by lazy { MpvEngine.trustedRoots(this).toByteArray() }
+    /** Run once the notification question is answered, either way. */
+    private var afterNotifications: (() -> Unit)? = null
+    private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val next = afterNotifications
+        afterNotifications = null
+        next?.invoke()
+    }
     /** A save waiting on storage access, run either way so a refusal reports as a failure. */
     private var unsaved: (() -> Unit)? = null
     private val storage = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -80,18 +99,19 @@ class MainActivity : ComponentActivity() {
         picked?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(it.resultCode, it.data))
         picked = null
     }
-    private val listen = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val heard = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-        sendHeard(heard.takeIf { result.resultCode == RESULT_OK })
-    }
+    private val voice = Voice(this) { bridge.send(it) }
     private lateinit var frameRates: FrameRateMatch
     /** False when onCreate only showed the outdated WebView message. */
     private val started get() = ::bridge.isInitialized
+    /** The page's renderer ended, leaving a web view that can't be used. */
+    private var pageGone = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!webViewUsable(this)) return setContentView(outdatedWebView(this))
-        enableEdgeToEdge()
+        // The page is dark whatever the system's theme, so the bars keep light icons.
+        val dark = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { true }
+        enableEdgeToEdge(dark, dark)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG || BuildConfig.INSPECTABLE)
 
         playback = Playback(this) { engine ->
@@ -101,26 +121,29 @@ class MainActivity : ComponentActivity() {
             })
         }
         // Edge to edge: the page keeps clear of the system bars with its own safe-area insets.
-        web = WebView(this)
+        web = CompletingWebView(this, onTv())
         setContentView(FrameLayout(this).apply {
             addView(playback.stage, MATCH_PARENT, MATCH_PARENT)
             addView(web, MATCH_PARENT, MATCH_PARENT)
         })
 
         val app = WebApp(BuildConfig.WEB_URL.ifEmpty { null })
-        app.configure(web, ::chooseFiles, players::open)
+        app.configure(web, ::chooseFiles, players::open, ::onRendererGone) { path ->
+            if (::player.isInitialized) player.thumbnail(path) else null
+        }
         val queue = Downloads.queue(this)
         queue.send = { message -> runOnUiThread { bridge.send(message) } }
-        downloads = DownloadChannel(queue, onAdd = ::askForNotifications)
+        downloads = DownloadChannel(queue, onAdd = { askForNotifications() })
         frameRates = FrameRateMatch(
             this,
             hold = {
                 val playing = !player.paused
-                if (playing) playback.engine.setProperty("pause", "yes")
+                if (playing) player.change(Change(paused = true))
                 playing
             },
-            resume = { playback.engine.setProperty("pause", "no") },
+            resume = { player.change(Change(paused = false)) },
         )
+        passthrough = Passthrough(this) { player.outputChanged() }
         player = PlayerChannel(
             playback.engine,
             send = { bridge.send(it) },
@@ -130,6 +153,8 @@ class MainActivity : ComponentActivity() {
             fallBack = { playback.fallBack(player) },
             frameRate = frameRates::match,
             showVideo = playback::showVideo,
+            passthrough = passthrough::supported,
+            trustedRoots = { trustedRoots },
         )
         gamepads = hasGamepad()
         getSystemService(InputManager::class.java).registerInputDeviceListener(controllers, null)
@@ -138,17 +163,17 @@ class MainActivity : ComponentActivity() {
             deviceName(),
             deviceId(),
             onTv(),
-            canListen(),
+            voice.available,
             gamepads,
             PictureInPicture.supported(this),
         )
         bridge = AppBridge(web, app.origins, identity, ::onMessage)
-        updater = Updater(this) { bridge.send(it) }
+        updater = Updater(this, ::askForNotifications) { bridge.send(it) }
         pip = PictureInPicture(this, playback.stage)
         focus = AudioFocus(
             this,
-            pause = { playback.engine.setProperty("pause", "yes") },
-            resume = { playback.engine.setProperty("pause", "no") },
+            pause = { player.change(Change(paused = true)) },
+            resume = { player.change(Change(paused = false)) },
         )
         player.start()
         player.session.addListener(object : Player.Listener {
@@ -185,6 +210,7 @@ class MainActivity : ComponentActivity() {
                 put("mpv", playback.engine.property("mpv-version"))
                 put("ffmpeg", playback.engine.property("ffmpeg-version"))
                 put("player", playback.engine.description)
+                put("ac3Encoder", AudioEncoder.has("ac3"))
             })
             "fullscreen" -> setFullscreen(message["value"]?.jsonPrimitive?.booleanOrNull ?: !screen.fullscreen)
             "levels" -> bridge.send(buildJsonObject {
@@ -207,11 +233,27 @@ class MainActivity : ComponentActivity() {
             }
             "player-engine" -> message["name"]?.jsonPrimitive?.contentOrNull?.let { playback.choose(it, player) }
             "player-retry" -> message["name"]?.jsonPrimitive?.contentOrNull?.let { playback.retry(it, player) }
-            "player-options" -> {
+            "player-settings" -> {
+                player.setSettings(PlayerProtocol.settings(message))
                 message["frameRate"]?.jsonPrimitive?.booleanOrNull?.let { frameRates.enabled = it }
                 message["tunneling"]?.jsonPrimitive?.booleanOrNull?.let { playback.tunneling = it }
+                message["dolbyVision"]?.jsonPrimitive?.booleanOrNull?.let { playback.dolbyVision = it }
+                playback.sound = Sound(
+                    dialogueBoost = message["dialogueBoost"]?.jsonPrimitive?.intOrNull ?: 0,
+                    nightMode = message["nightMode"]?.jsonPrimitive?.booleanOrNull == true,
+                    ac3Encode = message["ac3Encode"]?.jsonPrimitive?.booleanOrNull == true,
+                )
             }
-            "voice-search" -> listen()
+            "youtube-resolve" -> youtube.resolve(
+                message["request"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                message["id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            )
+            "keyboard-completions" -> web.showCompletions(
+                (message["items"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty(),
+            )
+            "watch-next" -> watchNext.publish((message["items"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty())
+            "voice-search" -> voice.listen()
+            "voice-cancel" -> voice.cancel()
             "save-file" -> saveFile(
                 message["name"]?.jsonPrimitive?.contentOrNull ?: "aiostreams.txt",
                 message["mime"]?.jsonPrimitive?.contentOrNull ?: "text/plain",
@@ -237,6 +279,21 @@ class MainActivity : ComponentActivity() {
                     }
                 }.start()
             }
+            "crash-report" -> Thread {
+                val report = runCatching { Crashes.last(this) }.getOrNull()
+                runOnUiThread {
+                    bridge.send(buildJsonObject {
+                        put("type", "crash-report")
+                        if (report != null) {
+                            put("at", report.at)
+                            put("summary", report.summary)
+                            put("details", report.details)
+                            if (report.page) put("page", true)
+                        }
+                    })
+                }
+            }.start()
+            "crash-seen" -> message["at"]?.jsonPrimitive?.longOrNull?.let { Crashes.seen(this, it) }
         }
     }
 
@@ -273,7 +330,7 @@ class MainActivity : ComponentActivity() {
             }
             saved.exceptionOrNull()?.let { Log.e("save-file", "saving $name", it) }
             runOnUiThread {
-                val note = if (saved.isSuccess) "Saved $name to Downloads" else "Couldn't save $name"
+                val note = getString(if (saved.isSuccess) R.string.file_saved else R.string.file_not_saved, name)
                 Toast.makeText(this, note, Toast.LENGTH_LONG).show()
             }
         }.start()
@@ -344,17 +401,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun listen() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        try {
-            listen.launch(intent)
-        } catch (_: ActivityNotFoundException) {
-            sendHeard(null)
-        }
-    }
-
     private var gamepads = false
 
     private val controllers = object : InputManager.InputDeviceListener {
@@ -378,22 +424,16 @@ class MainActivity : ComponentActivity() {
         InputDevice.getDevice(id)?.let { !it.isVirtual && it.supportsSource(InputDevice.SOURCE_JOYSTICK) } == true
     }
 
-    private fun canListen() =
-        packageManager.queryIntentActivities(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH), 0).isNotEmpty()
-
-    private fun sendHeard(text: String?) = bridge.send(buildJsonObject {
-        put("type", "voice-result")
-        put("text", text)
-    })
-
-    /** Asked on the first download, whose progress shows in one. */
-    private fun askForNotifications() {
+    /** Asked on the first download, whose progress shows in one, and before an update. */
+    private fun askForNotifications(then: () -> Unit = {}) {
         val permission = Manifest.permission.POST_NOTIFICATIONS
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
         ) {
-            notifications.launch(permission)
+            return then()
         }
+        afterNotifications = then
+        notifications.launch(permission)
     }
 
     /** Kept by the app, as the page's storage goes with the address it loads from. */
@@ -408,6 +448,24 @@ class MainActivity : ComponentActivity() {
 
     private fun deviceName(): String =
         Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
+
+    /**
+     * Starts the page again in a new activity, once it shows: Android ends a
+     * renderer behind other apps to free memory, and would end a new one too.
+     */
+    private fun onRendererGone(crashed: Boolean) {
+        val shown = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        Crashes.rendererGone(this, crashed, shown)
+        pageGone = true
+        bridge.close()
+        (web.parent as? ViewGroup)?.removeView(web)
+        if (shown) recreate()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (pageGone) recreate()
+    }
 
     override fun onResume() {
         super.onResume()
@@ -427,7 +485,7 @@ class MainActivity : ComponentActivity() {
         })
         // Closing the window, rather than opening it full size, stops playback.
         if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) {
-            playback.engine.setProperty("pause", "yes")
+            player.change(Change(paused = true))
         }
     }
 
@@ -435,17 +493,20 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         if (!started) return
         val background = player.session.item?.background == true
-        if (!isChangingConfigurations && !isInPictureInPictureMode && !background) playback.engine.setProperty("pause", "yes")
+        if (!isChangingConfigurations && !isInPictureInPictureMode && !background) player.change(Change(paused = true))
     }
 
     override fun onDestroy() {
         if (!started) return super.onDestroy()
         getSystemService(InputManager::class.java).unregisterInputDeviceListener(controllers)
         updater.release()
+        voice.release()
         Downloads.queue(this).send = null
         MediaController.releaseFuture(controller)
         PlaybackService.player = null
         focus.release()
+        passthrough.release()
+        youtube.release()
         playback.engine.release()
         web.destroy()
         super.onDestroy()

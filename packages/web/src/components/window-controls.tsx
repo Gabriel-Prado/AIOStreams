@@ -1,3 +1,4 @@
+import { t } from '@lingui/core/macro';
 import React from 'react';
 import {
   VscChromeClose,
@@ -37,27 +38,40 @@ export function WindowControls() {
       else if (m.type === 'fullscreen') setFullscreen(m.value);
     });
     shell.send({ type: 'window-state' });
-    const onDown = (e: MouseEvent) => {
+    const taken = (e: MouseEvent): 'resize' | 'move' | null => {
       const { maximized, fullscreen } = latest.current;
-      if (e.button !== 0 || fullscreen || e.clientY > STRIP_PX) return;
-      if (e.clientY <= EDGE_PX && !maximized && !native) {
+      if (e.button !== 0 || fullscreen || e.clientY > STRIP_PX) return null;
+      if (e.clientY <= EDGE_PX && !maximized && !native) return 'resize';
+      if ((e.target as HTMLElement | null)?.closest(INTERACTIVE)) return null;
+      return 'move';
+    };
+    // The system keeps the release of a press that moves the window, so the
+    // page never sees the press, or a hold it starts never ends.
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && taken(e)) e.stopPropagation();
+    };
+    const onDown = (e: MouseEvent) => {
+      const press = taken(e);
+      if (!press) return;
+      e.preventDefault();
+      if (press === 'resize') {
         const edge =
           e.clientX <= CORNER_PX
             ? 'nw'
             : e.clientX >= window.innerWidth - CORNER_PX
               ? 'ne'
               : 'n';
-        e.preventDefault();
         shell.send({ type: 'window-resize', edge });
-        return;
-      }
-      if ((e.target as HTMLElement | null)?.closest(INTERACTIVE)) return;
-      e.preventDefault();
-      shell.send({ type: e.detail === 2 ? 'window-maximize' : 'window-drag' });
+      } else
+        shell.send({
+          type: e.detail === 2 ? 'window-maximize' : 'window-drag',
+        });
     };
+    window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('mousedown', onDown);
     return () => {
       unsubscribe();
+      window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('mousedown', onDown);
     };
   }, [shell, native]);
@@ -86,7 +100,7 @@ export function WindowControls() {
         <button
           type="button"
           data-name="minimise"
-          aria-label="Minimise"
+          aria-label={t`Minimise`}
           tabIndex={-1}
           className={cn(button, 'hover:bg-white/5 active:bg-white/10')}
           onClick={() => shell.send({ type: 'minimize' })}
@@ -97,7 +111,7 @@ export function WindowControls() {
           <button
             type="button"
             data-name="fullscreen"
-            aria-label="Exit full screen"
+            aria-label={t`Exit full screen`}
             title="Exit full screen"
             tabIndex={-1}
             className={cn(button, 'hover:bg-white/5 active:bg-white/10')}
@@ -109,7 +123,7 @@ export function WindowControls() {
           <button
             type="button"
             data-name="maximise"
-            aria-label={maximized ? 'Restore' : 'Maximise'}
+            aria-label={maximized ? t`Restore` : t`Maximise`}
             tabIndex={-1}
             className={cn(button, 'hover:bg-white/5 active:bg-white/10')}
             onClick={() => shell.send({ type: 'window-maximize' })}
@@ -120,7 +134,7 @@ export function WindowControls() {
         <button
           type="button"
           data-name="close"
-          aria-label="Close"
+          aria-label={t`Close`}
           tabIndex={-1}
           className={cn(button, 'hover:bg-red-500 active:bg-red-600')}
           onClick={() => shell.send({ type: 'close' })}

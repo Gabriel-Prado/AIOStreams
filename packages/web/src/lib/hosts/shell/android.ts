@@ -1,11 +1,16 @@
+import { t } from '@lingui/core/macro';
+import { toast } from 'sonner';
 import type { Host } from '..';
 import { runAction } from '../../input';
 import { onSettingsChange, settings, type PlayerEngine } from '../../settings';
-import { appBridge } from './bridge';
+import { appBridge, ask } from './bridge';
 import { shellDownloads } from './downloads';
-import { setEngine, useShellPlayer } from './player';
+import { appEngine, setEngine } from './player';
+import { resolveYouTube } from './youtube';
 
 let fullscreen = false;
+let leaveAsked = 0;
+const LEAVE_MS = 2000;
 
 /**
  * Follows the app's full screen, which hides the system bars and turns to
@@ -14,22 +19,13 @@ let fullscreen = false;
 export function setupAndroid(): () => void {
   const bridge = appBridge();
   let engine: PlayerEngine | null = null;
-  let options = '';
-  const sendSettings = () => {
-    if (settings.android.engine.read() !== engine) {
-      engine = settings.android.engine.read();
-      bridge?.send({ type: 'player-engine', name: engine });
-    }
-    const next = {
-      frameRate: settings.android.frameRate.read(),
-      tunneling: settings.android.tunneling.read(),
-    };
-    if (JSON.stringify(next) === options) return;
-    options = JSON.stringify(next);
-    bridge?.send({ type: 'player-options', ...next });
+  const sendEngine = () => {
+    if (settings.player.engine.read() === engine) return;
+    engine = settings.player.engine.read();
+    bridge?.send({ type: 'player-engine', name: engine });
   };
-  sendSettings();
-  const unsubscribeSettings = onSettingsChange(sendSettings);
+  sendEngine();
+  const unsubscribeSettings = onSettingsChange(sendEngine);
   const unsubscribe = bridge?.subscribe((m) => {
     if (m.type === 'fullscreen') fullscreen = m.value;
     else if (m.type === 'back') runAction('back');
@@ -55,42 +51,41 @@ export function setupAndroid(): () => void {
 }
 
 /** The app's mpv.conf, as it answers `mpv-config` and `mpv-config-save`. */
-function mpvConfig(message: { type: string; text?: string }): Promise<string> {
-  const bridge = appBridge();
-  if (!bridge) return Promise.reject(new Error('Only the Android app has one'));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      stop();
-      reject(new Error('The app did not answer'));
-    }, 5000);
-    const stop = bridge.subscribe((m) => {
-      if (m.type === 'error') {
-        clearTimeout(timer);
-        stop();
-        reject(new Error(m.message));
-      } else if (m.type === 'mpv-config') {
-        clearTimeout(timer);
-        stop();
-        resolve(m.text);
-      }
-    });
-    bridge.send(message);
-  });
-}
+const mpvConfig = (message: { type: string; text?: string }) =>
+  ask(message, 'mpv-config', { timeoutMs: 5000, errors: true }).then(
+    (m) => m.text
+  );
 
 export const readMpvConfig = () => mpvConfig({ type: 'mpv-config' });
 
-function listen(): Promise<string | null> {
-  return new Promise((resolve) => {
+const voiceErrors = () => ({
+  'no-speech': t`Nothing was heard`,
+  failed: t`Voice search failed`,
+});
+
+const listen: NonNullable<Host['listen']> = ({ hearing, signal }) =>
+  new Promise((resolve, reject) => {
     const bridge = appBridge();
+    let level = 0;
+    const cancel = () => bridge?.send({ type: 'voice-cancel' });
     const stop = bridge?.subscribe((m) => {
+      if (m.type === 'voice-hearing') {
+        level = m.level ?? level;
+        hearing({ level, text: m.text });
+        return;
+      }
       if (m.type !== 'voice-result') return;
       stop?.();
-      resolve(m.text);
+      signal.removeEventListener('abort', cancel);
+      if (m.error) reject(new Error(voiceErrors()[m.error]));
+      else resolve(m.text);
     });
+    signal.addEventListener('abort', cancel, { once: true });
     bridge?.send({ type: 'voice-search' });
   });
-}
+
+const watchNext: NonNullable<Host['watchNext']> = (items) =>
+  appBridge()?.send({ type: 'watch-next', items });
 
 /** Saves it and applies it to what plays next. */
 export const saveMpvConfig = (text: string) =>
@@ -98,12 +93,13 @@ export const saveMpvConfig = (text: string) =>
 
 export const androidHost: Host = {
   name: 'android-app',
+  resolveYouTube,
   get tv() {
     return appBridge()?.tv === true;
   },
   device: () => ({ id: appBridge()?.deviceId, name: appBridge()?.device }),
-  usePlayer: useShellPlayer,
-  playerFeatures: ['audio', 'chapters', 'stats'],
+  player: appEngine,
+  playerFeatures: ['audio', 'chapters', 'stats', 'headers'],
   // A TV has little storage and is always online.
   get downloads() {
     return appBridge()?.tv ? undefined : shellDownloads;
@@ -114,28 +110,31 @@ export const androidHost: Host = {
   },
   saveFile: (name, type, text) =>
     appBridge()?.send({ type: 'save-file', name, mime: type, text }),
+  // Only a TV's home screen has the row.
+  get watchNext() {
+    return appBridge()?.tv ? watchNext : undefined;
+  },
+  keyboardCompletions: (names) =>
+    appBridge()?.send({ type: 'keyboard-completions', items: names }),
   fullscreen: {
     active: () => fullscreen,
     set: (on) => appBridge()?.send({ type: 'fullscreen', value: on }),
   },
-  // Back ends at Home, as in other Android apps, rather than walking the history before it.
+  // Back ends at Home, as in other Android apps, rather than walking the history before it; a second press leaves.
   back: () => {
     if ((location.hash.slice(1).split('?')[0] || '/') !== '/') return false;
-    appBridge()?.send({ type: 'exit' });
+    if (Date.now() - leaveAsked < LEAVE_MS) {
+      leaveAsked = 0;
+      appBridge()?.send({ type: 'exit' });
+    } else {
+      leaveAsked = Date.now();
+      toast(t`Press Back again to leave`, { duration: LEAVE_MS });
+    }
     return true;
   },
   exit: () => appBridge()?.send({ type: 'exit' }),
   levels: {
-    read: () =>
-      new Promise((resolve) => {
-        const bridge = appBridge();
-        const stop = bridge?.subscribe((m) => {
-          if (m.type !== 'levels') return;
-          stop?.();
-          resolve(m);
-        });
-        bridge?.send({ type: 'levels' });
-      }),
+    read: () => ask({ type: 'levels' }, 'levels'),
     set: (level, value) =>
       appBridge()?.send({ type: 'set-level', level, value }),
     release: () =>

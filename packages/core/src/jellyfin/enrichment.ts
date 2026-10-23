@@ -12,12 +12,14 @@ import {
   normaliseLangCode,
   normaliseLanguage,
 } from '../utils/languages.js';
+import { countryName } from '../utils/countries.js';
 
 export interface EnrichedPerson {
   name: string;
   type: (typeof PERSON_TYPES)[keyof typeof PERSON_TYPES];
   role?: string;
   photo?: string;
+  id?: string;
 }
 
 export interface SeasonDetails {
@@ -166,7 +168,7 @@ const ID_FALLBACKS: [string, string][] = [
   ['anidb_id', 'anidb'],
 ];
 
-function providerIdsFrom(source: AnyObject): Record<string, string> {
+export function providerIdsFrom(source: AnyObject): Record<string, string> {
   const out: Record<string, string> = {};
   const declared = isObject(source.ids) ? Object.entries(source.ids) : [];
   const fallbacks = ID_FALLBACKS.map(([field, key]) => [key, source[field]]);
@@ -174,7 +176,7 @@ function providerIdsFrom(source: AnyObject): Record<string, string> {
     const jf = PROVIDER_KEYS[key as string];
     const v = str(raw);
     if (!jf || !v || out[jf]) continue;
-    out[jf] = key === 'imdb' && !v.startsWith('tt') ? `tt${v}` : v;
+    out[jf] = key === 'imdb' && /^\d+$/.test(v) ? `tt${v}` : v;
   }
   return out;
 }
@@ -210,12 +212,17 @@ function detailed(
     const type = name ? typeOf(entry) : undefined;
     if (!name || !type) return [];
     const role = str(entry.character);
+    const tmdb = str(entry.tmdbId);
+    const tvdb = str(entry.tvdbId);
     return [
       {
         name,
         type,
         role: role && role !== name ? role : undefined,
         photo: str(entry.photo),
+        id:
+          str(entry.id) ??
+          (tmdb ? `tmdb:${tmdb}` : tvdb ? `tvdb:${tvdb}` : undefined),
       },
     ];
   });
@@ -271,7 +278,7 @@ function peopleFrom(meta: AnyMeta): EnrichedPerson[] {
   ]);
 }
 
-function statusFrom(meta: AnyMeta): 'Continuing' | 'Ended' | undefined {
+export function statusFrom(meta: AnyMeta): 'Continuing' | 'Ended' | undefined {
   const explicit = str(meta.status)?.toLowerCase();
   if (
     explicit === 'continuing' ||
@@ -372,30 +379,43 @@ function seasonsFrom(
   return out;
 }
 
+const YOUTUBE =
+  /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)\//i;
+const youtubeUrl = (id: string | undefined) =>
+  id && `https://www.youtube.com/watch?v=${id}`;
+
+/** A meta's `trailers`, with `trailerStreams` merged in for the names and links they add. */
 function trailersFrom(meta: AnyMeta): { Name: string; Url: string }[] {
-  const trailers: { Name: string; Url: string }[] = [];
-  const add = (name: string, url: string) => {
-    if (!trailers.some((t) => t.Url === url))
-      trailers.push({ Name: name, Url: url });
+  const found: { name?: string; url: string }[] = [];
+  const add = (name: string | undefined, url: string | undefined) => {
+    if (!url) return;
+    const seen = found.find((t) => t.url === url);
+    if (!seen) found.push({ name, url });
+    else seen.name ??= name;
   };
-  for (const t of Array.isArray(meta.trailerStreams)
-    ? meta.trailerStreams
-    : []) {
-    const yt = isObject(t) ? str(t.ytId) : undefined;
-    if (yt)
-      add(str(t.title) ?? 'Trailer', `https://www.youtube.com/watch?v=${yt}`);
-  }
   for (const t of meta.trailers ?? []) {
     const source = str(t.source) ?? str((t as AnyObject).ytId);
-    if (!source) continue;
     add(
-      str((t as AnyObject).name) ?? str(t.type) ?? 'Trailer',
-      source.startsWith('http')
-        ? source
-        : `https://www.youtube.com/watch?v=${source}`
+      str(t.name),
+      source && /^https?:\/\//i.test(source) ? source : youtubeUrl(source)
     );
   }
-  return trailers;
+  for (const t of (Array.isArray(meta.trailerStreams)
+    ? meta.trailerStreams
+    : []
+  ).filter(isObject)) {
+    const url = str(t.url);
+    add(
+      str(t.title) ?? str(t.name),
+      url && /^https?:\/\//i.test(url) ? url : youtubeUrl(str(t.ytId))
+    );
+  }
+  // Direct links play without resolving, so they go first.
+  const direct = found.filter((t) => !YOUTUBE.test(t.url));
+  return [...direct, ...found.filter((t) => YOUTUBE.test(t.url))].map((t) => ({
+    Name: t.name ?? 'Trailer',
+    Url: t.url,
+  }));
 }
 
 const AIR_DAYS = [
@@ -413,6 +433,12 @@ export function readEnrichment(input: MetaPreview | Meta): Enrichment {
   const extras = isObject(meta.app_extras) ? meta.app_extras : {};
   const stability = isObject(meta._stability) ? meta._stability : {};
   const country = str(meta.country);
+  // Whole first, as ISO names hold commas ("Korea, Republic of").
+  const countries = meta.countries?.length
+    ? meta.countries
+    : country && countryName(country)
+      ? [country]
+      : country?.split(',');
 
   return {
     providerIds: providerIdsFrom(meta),
@@ -430,9 +456,7 @@ export function readEnrichment(input: MetaPreview | Meta): Enrichment {
       str(meta.certificationLocal) ?? str(extras.certificationLocal),
     criticRating: criticRatingFrom(meta, extras),
     studios: strings([...(meta.studios ?? []), ...(meta.networks ?? [])]),
-    countries: meta.countries?.length
-      ? strings(meta.countries)
-      : strings(country?.split(',')),
+    countries: strings(strings(countries).map((c) => countryName(c) ?? c)),
     tags: strings(meta.tags),
     trailers: trailersFrom(meta),
     status: statusFrom(meta),

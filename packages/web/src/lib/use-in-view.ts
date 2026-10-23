@@ -1,5 +1,6 @@
 import React from 'react';
 import { currentHost } from './hosts';
+import { glideShift } from './input/glide';
 
 /**
  * The element a page scrolls inside, where it is not the window. Content it
@@ -71,8 +72,6 @@ const pools = new Map<Element | null, Map<string, Pool>>();
  * animation, as each key's glide and focus scale are.
  */
 const measured = new Set<Pool>();
-/** Past a keyed scroll's glide, when targets are drawn where they are. */
-const SETTLE_MS = 300;
 const due = new Set<Pool>();
 let queued = false;
 /** Counts changes that can move targets other than scrolls. */
@@ -102,16 +101,10 @@ function measureSoon(pools: Iterable<Pool> = measured) {
   );
 }
 
-/** Now and once a glide has settled. */
-function measureTwice(pools: Pool[]) {
-  measureSoon(pools);
-  setTimeout(() => measureSoon(pools), SETTLE_MS);
-}
-
 /** A row's scroll changes only what is measured against that row or the screen. */
 function onScroll(e: Event) {
   const scroller = e.target instanceof Element ? e.target : null;
-  measureTwice(
+  measureSoon(
     [...measured].filter((p) => p.root === scroller || p.root === null)
   );
 }
@@ -121,16 +114,18 @@ let listening = false;
 function listen() {
   if (listening) return;
   listening = true;
-  const all = () => {
-    layout++;
-    measureTwice([...measured]);
-  };
   document.addEventListener('scroll', onScroll, {
     capture: true,
     passive: true,
   });
-  addEventListener('resize', all);
-  addEventListener('hashchange', all);
+  addEventListener('resize', () => {
+    layout++;
+    measureSoon();
+  });
+  addEventListener('hashchange', () => {
+    layout++;
+    measureSoon();
+  });
   new ResizeObserver(() => {
     layout++;
     measureSoon();
@@ -179,6 +174,8 @@ function measure(pool: Pool, screen: Screen, changes: Change[]) {
   const farX = root && bounds ? bounds.width * FAR_SCREENS : Infinity;
   const farY =
     (root && bounds ? bounds.height : screen.box.height) * FAR_SCREENS;
+  // Kept boxes move with scrolls only, so a glide under way is taken out.
+  const glide = glideShift(root ?? document.documentElement);
   for (const [el, onEntry] of pool.watches) {
     const last = pool.boxes.get(el);
     if (bounds && last?.layout === layout && !pool.seen.get(el)) {
@@ -194,7 +191,19 @@ function measure(pool: Pool, screen: Screen, changes: Change[]) {
     }
     // A kept page is inert, and its boxes still read as on screen.
     const shown = !!bounds && el.isConnected && !el.closest('[inert]');
-    const box = shown ? el.getBoundingClientRect() : new DOMRect();
+    let box = shown ? el.getBoundingClientRect() : new DOMRect();
+    if (
+      shown &&
+      glide &&
+      (glide.shift[0] || glide.shift[1]) &&
+      glide.layer.contains(el)
+    )
+      box = new DOMRect(
+        box.x - glide.shift[0],
+        box.y - glide.shift[1],
+        box.width,
+        box.height
+      );
     if (shown)
       pool.boxes.set(el, {
         left: box.left - bounds.left,
@@ -223,6 +232,13 @@ function measure(pool: Pool, screen: Screen, changes: Change[]) {
       },
     ]);
   }
+}
+
+export function onScreen(el: Element): boolean {
+  const r = el.getBoundingClientRect();
+  return (
+    r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth
+  );
 }
 
 /** Calls `onEntry` as the element comes near `root` (the screen when null) and leaves it. */

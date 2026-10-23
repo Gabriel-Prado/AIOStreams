@@ -1,6 +1,7 @@
 export {
   ACTION_IDS,
-  GROUP_LABELS,
+  actionText,
+  groupLabel,
   action,
   clashWith,
   groupActions,
@@ -31,11 +32,14 @@ export {
   keyboardFocus,
   move,
   moveTo,
+  navSide,
   openMenu,
   scrollStep,
   type Direction,
 } from './focus';
 export { startGamepads } from './gamepad';
 export { returnFocus } from './return';
+export { useRestoreFocus } from './restore-focus';
 export { startSubmitButtons } from './submit-buttons';
+export { tab, tabList } from './tabs';
 export { inputLabels } from './keys';

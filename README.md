@@ -79,7 +79,7 @@ Watch without Stremio, with the same addons, filters, sorting and formatting. Th
 **Where you can watch**
 
 - **In Your Browser**: On any device. Add it to your phone's home screen and it opens like an app.
-- **Desktop App** (alpha): For Windows, macOS and Linux, with a built-in player that plays what a browser can't, including HDR on Windows. It keeps itself up to date on Windows and macOS, and comes as a Flatpak on Linux. **[Download it here](https://github.com/Viren070/AIOStreams/releases/tag/desktop)**.
+- **Desktop App**: For Windows, macOS and Linux, with a built-in player that plays what a browser can't, including HDR on Windows and macOS. It keeps itself up to date on Windows and macOS, and comes as a Flatpak on Linux. **[Download it here](https://github.com/Viren070/AIOStreams/releases/tag/desktop)**.
 - **Android App** (new): For phones, tablets and TVs, including Google TV and Fire TV, with a layout made for the remote on TVs. ExoPlayer and mpv play the video: HDR and Dolby Vision, converting profile 7 to 8.1 where a device needs it, styled subtitles that look as they do in mpv, surround passthrough, picture-in-picture and touch gestures. Its screens are a web page drawn over the native player, so low-end TV sticks can feel slow to browse. **[Get it here](https://docs.aiostreams.viren070.me/apps/android)**.
 - **Smart TVs** (new): Apps for LG and Samsung TVs, installed from a file. So far only tried in the TV makers' emulators. **[Install guide](https://docs.aiostreams.viren070.me/apps/smart-tv)**.
 - **Jellyfin Apps**: Your configuration is also a Jellyfin-compatible server, so Swiftfin, Findroid, Infuse, Kodi, Android TV and other Jellyfin apps can sign in to it too, on a TV with a Quick Connect code.
@@ -231,6 +231,16 @@ Take control of your Stremio home page from one place.
    - Or watch without Stremio: under **AIOStreams app**, open the app in your browser or get it for your computer, phone or TV, or connect a Jellyfin app under **Jellyfin apps**.
 
 For full setup and configuration instructions, see the **[documentation](https://docs.aiostreams.viren070.me)**.
+
+---
+
+## 🌍 Translations
+
+The AIOStreams apps are translated on **[Hosted Weblate](https://hosted.weblate.org/engage/aiostreams/)**. Anyone can translate into their language there, no coding needed. See the **[translating guide](https://docs.aiostreams.viren070.me/guides/translating)** for how it works.
+
+<a href="https://hosted.weblate.org/engage/aiostreams/">
+  <img src="https://hosted.weblate.org/widget/aiostreams/svg-badge.svg" alt="Translation status">
+</a>
 
 ---
 

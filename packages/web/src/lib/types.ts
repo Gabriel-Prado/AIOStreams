@@ -16,6 +16,8 @@ export type {
   MediaStream,
   PlaybackInfoResponse,
   QuickConnectResult,
+  SearchHint,
+  SearchHintResult,
   SessionInfoDto,
   UserDto,
 } from '@jellyfin/sdk/lib/generated-client/models';
@@ -55,7 +57,6 @@ export interface Branding {
 export interface PickableUser {
   user: UserDto;
   avatar: string | null;
-  hidden: boolean;
   /** `password-pin` is sent as `<password>/<pin>`. */
   needs: 'pin' | 'password' | 'password-pin' | null;
 }

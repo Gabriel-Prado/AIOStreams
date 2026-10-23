@@ -18,7 +18,7 @@
     X(renderer_init) X(renderer_done) X(set_fonts) X(set_frame_size) X(set_storage_size) X(set_margins) \
     X(set_use_margins) X(set_font_scale) X(set_line_position) X(new_track) X(free_track) \
     X(process_codec_private) X(process_chunk) X(read_memory) X(render_frame) \
-    X(set_selective_style_override_enabled) X(set_selective_style_override)
+    X(set_selective_style_override_enabled) X(set_selective_style_override) X(set_cache_limits) X(flush_events)
 
 static struct {
 #define MEMBER(name) __typeof__(ass_##name) *name;
@@ -45,9 +45,11 @@ typedef struct {
     ARect drawn;
     ANativeWindow_Buffer buffer;
     int locked;
+    char *bundled;
     char *font;
     int width;
     int height;
+    int cache_mb;
 } Surface;
 
 static void message(int level, const char *format, va_list args, void *data) {
@@ -76,28 +78,49 @@ static void blend_row(const uint8_t *src, uint32_t *dst, int x, int width,
 
 static inline uint8x8_t div255x8(uint16x8_t x) { return vraddhn_u16(x, vrshrq_n_u16(x, 8)); }
 
-// Eight pixels at a time, the same sums as blend_row.
+// Eight pixels of mask, the same sums as blend_row.
+static inline void blend8(uint8x8_t mask, uint32_t *dst, uint8x8_t vr, uint8x8_t vg, uint8x8_t vb, uint8x8_t vo) {
+    uint8x8_t k = div255x8(vmull_u8(mask, vo));
+#if defined(__aarch64__)
+    if (!vmaxv_u8(k)) return;
+#endif
+    uint8x8_t keep = vmvn_u8(k);
+    uint8x8x4_t d = vld4_u8((uint8_t *) dst);
+    d.val[0] = div255x8(vmlal_u8(vmull_u8(vr, k), d.val[0], keep));
+    d.val[1] = div255x8(vmlal_u8(vmull_u8(vg, k), d.val[1], keep));
+    d.val[2] = div255x8(vmlal_u8(vmull_u8(vb, k), d.val[2], keep));
+    d.val[3] = vadd_u8(k, div255x8(vmull_u8(d.val[3], keep)));
+    vst4_u8((uint8_t *) dst, d);
+}
+
 static void blend(const ASS_Image *image, uint32_t *bits, int stride) {
     uint32_t r = image->color >> 24, g = (image->color >> 16) & 0xff, b = (image->color >> 8) & 0xff;
     uint32_t opacity = 255 - (image->color & 0xff);
     uint8x8_t vr = vdup_n_u8(r), vg = vdup_n_u8(g), vb = vdup_n_u8(b), vo = vdup_n_u8(opacity);
+#if defined(__aarch64__)
+    uint32x4_t solid = vdupq_n_u32(r | g << 8 | b << 16 | 0xffu << 24);
+#endif
     for (int y = 0; y < image->h; y++) {
         const uint8_t *src = image->bitmap + y * image->stride;
         uint32_t *dst = bits + (image->dst_y + y) * stride + image->dst_x;
         int x = 0;
-        for (; x + 8 <= image->w; x += 8) {
-            uint8x8_t k = div255x8(vmull_u8(vld1_u8(src + x), vo));
 #if defined(__aarch64__)
-            if (!vmaxv_u8(k)) continue;
-#endif
-            uint8x8_t keep = vmvn_u8(k);
-            uint8x8x4_t d = vld4_u8((uint8_t *) (dst + x));
-            d.val[0] = div255x8(vmlal_u8(vmull_u8(vr, k), d.val[0], keep));
-            d.val[1] = div255x8(vmlal_u8(vmull_u8(vg, k), d.val[1], keep));
-            d.val[2] = div255x8(vmlal_u8(vmull_u8(vb, k), d.val[2], keep));
-            d.val[3] = vadd_u8(k, div255x8(vmull_u8(d.val[3], keep)));
-            vst4_u8((uint8_t *) (dst + x), d);
+        // Most of a mask is empty, and full coverage by an opaque colour is just the colour.
+        for (; x + 16 <= image->w; x += 16) {
+            uint8x16_t mask = vld1q_u8(src + x);
+            if (!vmaxvq_u8(mask)) continue;
+            if (opacity == 255 && vminvq_u8(mask) == 255) {
+                vst1q_u32(dst + x, solid);
+                vst1q_u32(dst + x + 4, solid);
+                vst1q_u32(dst + x + 8, solid);
+                vst1q_u32(dst + x + 12, solid);
+                continue;
+            }
+            blend8(vget_low_u8(mask), dst + x, vr, vg, vb, vo);
+            blend8(vget_high_u8(mask), dst + x + 8, vr, vg, vb, vo);
         }
+#endif
+        for (; x + 8 <= image->w; x += 8) blend8(vld1_u8(src + x), dst + x, vr, vg, vb, vo);
         blend_row(src, dst, x, image->w, r, g, b, opacity);
     }
 }
@@ -129,6 +152,7 @@ static void include(ARect *rect, int left, int top, int right, int bottom) {
 
 static void start_renderer(Surface *surface) {
     surface->renderer = libass.renderer_init(surface->library);
+    if (surface->cache_mb) libass.set_cache_limits(surface->renderer, 0, surface->cache_mb);
     libass.set_fonts(surface->renderer, surface->font, "sans-serif", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
     if (surface->width) libass.set_frame_size(surface->renderer, surface->width, surface->height);
 }
@@ -141,6 +165,7 @@ JNIEXPORT jlong JNICALL METHOD(nativeCreate)(JNIEnv *env, jclass clazz, jstring 
     libass.set_message_cb(surface->library, message, NULL);
     libass.set_extract_fonts(surface->library, 1);
     const char *path = (*env)->GetStringUTFChars(env, font, NULL);
+    surface->bundled = strdup(path);
     surface->font = strdup(path);
     (*env)->ReleaseStringUTFChars(env, font, path);
     start_renderer(surface);
@@ -162,6 +187,14 @@ JNIEXPORT void JNICALL METHOD(nativeClearFonts)(JNIEnv *env, jclass clazz, jlong
     surface->images = NULL;
     libass.renderer_done(surface->renderer);
     libass.clear_fonts(surface->library);
+    start_renderer(surface);
+}
+
+// libass keeps the font it picked for each name, so fonts added later need a new renderer.
+JNIEXPORT void JNICALL METHOD(nativeReloadFonts)(JNIEnv *env, jclass clazz, jlong handle) {
+    Surface *surface = (Surface *) handle;
+    surface->images = NULL;
+    libass.renderer_done(surface->renderer);
     start_renderer(surface);
 }
 
@@ -200,6 +233,16 @@ JNIEXPORT void JNICALL METHOD(nativeFreeTrack)(JNIEnv *env, jclass clazz, jlong 
     libass.free_track((ASS_Track *) track);
 }
 
+JNIEXPORT void JNICALL METHOD(nativeFlushTrack)(JNIEnv *env, jclass clazz, jlong track) {
+    libass.flush_events((ASS_Track *) track);
+}
+
+JNIEXPORT void JNICALL METHOD(nativeSetCacheLimit)(JNIEnv *env, jclass clazz, jlong handle, jint mb) {
+    Surface *surface = (Surface *) handle;
+    surface->cache_mb = mb;
+    libass.set_cache_limits(surface->renderer, 0, mb);
+}
+
 JNIEXPORT void JNICALL METHOD(nativeSetWindow)(
         JNIEnv *env, jclass clazz, jlong handle, jobject view, jint width, jint height) {
     Surface *surface = (Surface *) handle;
@@ -228,11 +271,26 @@ JNIEXPORT void JNICALL METHOD(nativeSetLayout)(
     libass.set_line_position(renderer, linePosition);
 }
 
+static void use_font(Surface *surface, const char *path) {
+    if (!strcmp(path, surface->font)) return;
+    free(surface->font);
+    surface->font = strdup(path);
+    libass.set_fonts(surface->renderer, surface->font, "sans-serif", ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
+}
+
 // `override` is AssStyle's NONE, SCALE or FORCE.
 JNIEXPORT void JNICALL METHOD(nativeSetStyle)(
         JNIEnv *env, jclass clazz, jlong handle, jint override, jint color, jint outlineColor,
-        jint backColor, jdouble outlineSize, jint borderStyle, jboolean bold) {
-    ASS_Renderer *renderer = ((Surface *) handle)->renderer;
+        jint backColor, jdouble outlineSize, jint borderStyle, jboolean bold, jdouble shadowSize, jstring fontFile) {
+    Surface *surface = (Surface *) handle;
+    ASS_Renderer *renderer = surface->renderer;
+    if (fontFile) {
+        const char *path = (*env)->GetStringUTFChars(env, fontFile, NULL);
+        use_font(surface, path);
+        (*env)->ReleaseStringUTFChars(env, fontFile, path);
+    } else {
+        use_font(surface, surface->bundled);
+    }
     int flags = override ? ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE : 0;
     if (override == 2) {
         flags |= ASS_OVERRIDE_BIT_FONT_NAME | ASS_OVERRIDE_BIT_FONT_SIZE_FIELDS | ASS_OVERRIDE_BIT_COLORS |
@@ -253,6 +311,7 @@ JNIEXPORT void JNICALL METHOD(nativeSetStyle)(
         .ScaleY = 1,
         .BorderStyle = borderStyle,
         .Outline = outlineSize * scale,
+        .Shadow = shadowSize * scale,
         .Alignment = 2,
         .MarginL = 19 * scale,
         .MarginR = 19 * scale,
@@ -316,6 +375,7 @@ JNIEXPORT void JNICALL METHOD(nativeRelease)(JNIEnv *env, jclass clazz, jlong ha
     if (surface->window) ANativeWindow_release(surface->window);
     libass.renderer_done(surface->renderer);
     libass.library_done(surface->library);
+    free(surface->bundled);
     free(surface->font);
     free(surface);
 }

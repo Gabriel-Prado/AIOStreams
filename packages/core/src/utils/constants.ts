@@ -1,4 +1,5 @@
 import { Option, Resource } from '../db/schemas.js';
+import { LANGUAGES } from './language-list.js';
 
 export enum ErrorCode {
   // User API
@@ -1611,6 +1612,10 @@ const SEGMENT_PROVIDERS = ['introdb', 'aniskip', 'animeskip', 'pmdb'] as const;
 
 export type SegmentProviderId = (typeof SEGMENT_PROVIDERS)[number];
 
+const SUGGESTION_PROVIDERS = ['lumieredb', 'cinemeta'] as const;
+
+export type SuggestionProviderId = (typeof SUGGESTION_PROVIDERS)[number];
+
 export const RESOURCE_LABELS: Record<Resource, string> = {
   [STREAM_RESOURCE]: 'Stream',
   [SUBTITLES_RESOURCE]: 'Subtitles',
@@ -1637,63 +1642,6 @@ export const PRESET_CATEGORIES = [
   PresetCategory.META_CATALOGS,
   PresetCategory.MISC,
 ] as const;
-
-const LANGUAGES = [
-  'English',
-  'Japanese',
-  'Chinese',
-  'Russian',
-  'Arabic',
-  'Portuguese',
-  'Portuguese (Brazil)',
-  'Spanish',
-  'French',
-  'German',
-  'Italian',
-  'Korean',
-  'Hindi',
-  'Bengali',
-  'Punjabi',
-  'Marathi',
-  'Gujarati',
-  'Tamil',
-  'Telugu',
-  'Kannada',
-  'Malayalam',
-  'Thai',
-  'Vietnamese',
-  'Indonesian',
-  'Turkish',
-  'Hebrew',
-  'Persian',
-  'Ukrainian',
-  'Greek',
-  'Lithuanian',
-  'Latvian',
-  'Estonian',
-  'Polish',
-  'Czech',
-  'Slovak',
-  'Hungarian',
-  'Romanian',
-  'Bulgarian',
-  'Serbian',
-  'Croatian',
-  'Slovenian',
-  'Dutch',
-  'Danish',
-  'Finnish',
-  'Swedish',
-  'Norwegian',
-  'Malay',
-  'Latino',
-  'Dual Audio',
-  'Dubbed',
-  'Multi',
-  'Original',
-  'Unknown',
-] as const;
-
 export const SNIPPETS = [
   {
     name: 'Resolution',
@@ -1821,6 +1769,7 @@ export {
   LANGUAGES,
   RESOURCES,
   SEGMENT_PROVIDERS,
+  SUGGESTION_PROVIDERS,
   STREAM_RESOURCE,
   SUBTITLES_RESOURCE,
   CATALOG_RESOURCE,

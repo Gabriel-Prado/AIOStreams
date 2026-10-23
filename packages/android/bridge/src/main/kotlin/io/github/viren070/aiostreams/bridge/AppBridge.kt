@@ -60,6 +60,11 @@ class AppBridge(
         reply?.postMessage(message.toString())
     }
 
+    /** Stops sending to a page whose renderer is gone. */
+    fun close() {
+        reply = null
+    }
+
     private fun script(identity: AppIdentity): String = """
         (() => {
           if (window.top !== window || window.aiostreamsApp) return;
@@ -83,7 +88,7 @@ class AppBridge(
           };
           const send = (message) => port.postMessage(JSON.stringify(message));
           window.aiostreamsApp = Object.freeze({
-            protocol: 1,
+            protocol: 2,
             version: ${JsonPrimitive(identity.version)},
             platform: 'android',
             tv: ${identity.tv},

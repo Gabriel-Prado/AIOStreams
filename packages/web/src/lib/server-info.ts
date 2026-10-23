@@ -1,6 +1,7 @@
 import React from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import type { JellyfinClient } from './client';
+import type { PartyRelayMode } from '@aiostreams/core';
+import { allowHints, type JellyfinClient } from './client';
 import type { Branding } from './types';
 
 /** The extensions a server can offer; the server lists them in `system.ts`. */
@@ -13,7 +14,10 @@ export type Feature =
   | 'refreshVersions'
   | 'versions'
   | 'genreRequired'
-  | 'fillers';
+  | 'fillers'
+  | 'parties'
+  | 'reports'
+  | 'clientHints';
 
 /** What a server's public info says about it. */
 export interface ServerInfo extends Branding {
@@ -26,6 +30,12 @@ export interface ServerInfo extends Branding {
   features: Partial<Record<Feature, number>>;
   /** The server's build, like `v2.35.0` or `nightly a1b2c3d4`. */
   version: string | null;
+  /** CSS for everyone on the server, under each person's own. */
+  css: string | null;
+  /** Who its party relay admits besides its users, and the relay it suggests for the rest. */
+  parties: { relay: PartyRelayMode; defaultRelay: string | null } | null;
+  /** Whether the server keeps reports from the apps, and can pass them on to the developer. */
+  reports: { forward: boolean } | null;
 }
 
 export const NO_SERVER_INFO: ServerInfo = {
@@ -36,6 +46,9 @@ export const NO_SERVER_INFO: ServerInfo = {
   personal: false,
   features: {},
   version: null,
+  css: null,
+  parties: null,
+  reports: null,
 };
 
 interface PublicSystemInfo {
@@ -46,6 +59,9 @@ interface PublicSystemInfo {
     pinSignIn?: boolean;
     personal?: boolean;
     features?: ServerInfo['features'];
+    css?: string | null;
+    parties?: ServerInfo['parties'];
+    reports?: ServerInfo['reports'];
     version?: { tag?: string; channel?: string; commit?: string };
   };
 }
@@ -77,7 +93,7 @@ export function useFeature(feature: Feature): boolean {
  * configuration it signed in to can rename the server.
  */
 export function useServerInfoQuery(client: JellyfinClient) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['jf-server-info', client.base, client.token],
     meta: { cache: 'account' },
     queryFn: async (): Promise<ServerInfo> => {
@@ -90,10 +106,16 @@ export function useServerInfoQuery(client: JellyfinClient) {
         personal: data.aiostreams?.personal ?? false,
         features: data.aiostreams?.features ?? {},
         version: buildVersion(data.aiostreams?.version),
+        css: data.aiostreams?.css || null,
+        parties: data.aiostreams?.parties ?? null,
+        reports: data.aiostreams?.reports ?? null,
       };
     },
     staleTime: 5 * 60_000,
     // A new token asks again; the screen fading out meanwhile must not change.
     placeholderData: keepPreviousData,
   });
+  // While rendering, so the screens below have it for their first requests.
+  allowHints(client.base, !!query.data?.features.clientHints);
+  return query;
 }

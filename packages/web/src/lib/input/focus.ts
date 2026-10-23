@@ -1,4 +1,5 @@
 import { drift, glideBy, glideTo, headedTo } from './glide';
+import { pageRtl } from '../direction';
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
@@ -91,6 +92,13 @@ export function ownsKey(el: Element | null, input: string): boolean {
     el.readOnly
   )
     return false;
+  // Up and down leave a many-line field from its first and last line.
+  if (el instanceof HTMLTextAreaElement && VERTICAL.includes(input)) {
+    const { value, selectionStart, selectionEnd } = el;
+    return input === 'ArrowUp'
+      ? value.slice(0, selectionStart).includes('\n')
+      : value.slice(selectionEnd).includes('\n');
+  }
   if (
     el.matches(
       'textarea, select, [contenteditable=""], [contenteditable=true], [role=spinbutton]'
@@ -114,9 +122,8 @@ function scope(): Element {
 /** Out of reach by its markup alone, before anything is measured. */
 const ruledOut = (el: HTMLElement) =>
   el.matches(
-    ':disabled, input[type=hidden], [contenteditable=false], [role=tabpanel], [data-nav=skip], [tabindex="-1"]:not([role=tab]):not([role=radio])'
-  ) ||
-  !!el.closest('[inert], [aria-hidden=true], [data-tv] [data-nav-tv=skip]');
+    ':disabled, input[type=hidden], [contenteditable=false], [role=tabpanel], [tabindex="-1"]:not([role=tab]):not([role=radio])'
+  ) || !!el.closest('[inert], [aria-hidden=true], [data-nav=skip]');
 
 /** A focusable standing for its whole card (`data-nav-card`) is measured as its `data-nav-box`. */
 const rectOf = (el: HTMLElement) => {
@@ -282,6 +289,43 @@ function candidates(
   });
 }
 
+/** In a `data-nav-row`, whose cards lie in their order, the next one that way. */
+function along(
+  from: HTMLElement,
+  rect: DOMRect,
+  dir: Direction
+): HTMLElement | null {
+  const row = from.closest('[data-nav-row]');
+  if (!row) return null;
+  const all = [...row.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  const at = all.indexOf(from);
+  if (at < 0) return null;
+  const step = dir === 'right' ? 1 : -1;
+  for (let i = at + step; i >= 0 && i < all.length; i += step) {
+    if (ruledOut(all[i])) continue;
+    const to = rectOf(all[i]);
+    return distance(rect, to, dir)?.inLine && canFocus(all[i], to)
+      ? all[i]
+      : null;
+  }
+  return null;
+}
+
+/** Focus's nearest box that scrolls up and down and can still go `dir`. */
+function scrollerToward(from: HTMLElement, dir: Direction): Element | null {
+  for (
+    let box = from.parentElement;
+    box && box !== document.body;
+    box = box.parentElement
+  ) {
+    if (!/auto|scroll/.test(getComputedStyle(box).overflowY)) continue;
+    const [, top] = headedTo(box);
+    if (dir === 'up' ? top > 0 : top + box.clientHeight < box.scrollHeight - 1)
+      return box;
+  }
+  return null;
+}
+
 function nearest(
   root: Element,
   from: HTMLElement,
@@ -291,6 +335,8 @@ function nearest(
   // Sideways keeps to its own line, so focus stops at a row's end.
   const sideways = dir === 'left' || dir === 'right';
   const rect = rectOf(from);
+  const next = sideways && !everything ? along(from, rect, dir) : null;
+  if (next) return next;
   const scored: Candidate[] = [];
   const els = everything
     ? [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
@@ -304,7 +350,18 @@ function nearest(
     if (way) scored.push({ ...way, el, rect: to });
   }
   scored.sort((a, b) => a.score - b.score);
-  const found = pick(scored, from, rect, dir, sideways);
+  // A box that can still scroll that way keeps focus, as what it scrolled past lies over what's beyond its edge.
+  const own = sideways ? null : scrollerToward(from, dir);
+  const found =
+    (own &&
+      pick(
+        scored.filter((way) => own.contains(way.el)),
+        from,
+        rect,
+        dir,
+        sideways
+      )) ||
+    pick(scored, from, rect, dir, sideways);
   // Something only out of sight or far off that way.
   return found || everything || sideways
     ? found
@@ -330,7 +387,8 @@ function pick(
     if (!canFocus(way.el, way.rect)) continue;
     const bar = barOf(way.el);
     if (bar === home) {
-      if (way.inLine) return way.el;
+      if (way.inLine)
+        return (!sideways && rowBefore(scored, way, rect, dir, home)) || way.el;
       if (sideways) beside ||= way.off <= rect.height;
       else if (!other) return inNearestRow(scored, way, home);
     } else if (inView(way.el)) {
@@ -375,6 +433,43 @@ function inNearestRow(
 }
 
 /**
+ * The best of the nearest `data-nav-group` whose box lies across the way before
+ * `to`, as a short row's cards may all sit to one side of focus.
+ */
+function rowBefore(
+  ways: Candidate[],
+  to: Candidate,
+  rect: DOMRect,
+  dir: Direction,
+  home: Element | null
+): HTMLElement | null {
+  const seen = new Set<Element>();
+  let row: { group: Element; gap: number } | null = null;
+  for (const way of ways) {
+    if (way.gap >= to.gap) continue;
+    const group = way.el.closest(GROUP);
+    if (!group || seen.has(group) || group.contains(to.el)) continue;
+    seen.add(group);
+    const box = settled(group, group.getBoundingClientRect());
+    const across = distance(rect, box, dir);
+    if (!across?.inLine || across.gap < 0) continue;
+    const past = distance(box, to.rect, dir);
+    if (!past || past.gap < 0) continue;
+    if (!row || across.gap < row.gap) row = { group, gap: across.gap };
+  }
+  if (!row) return null;
+  const { group } = row;
+  return (
+    ways.find(
+      (way) =>
+        group.contains(way.el) &&
+        barOf(way.el) === home &&
+        canFocus(way.el, way.rect)
+    )?.el ?? null
+  );
+}
+
+/**
  * How far a bar, or part of the page, lies wholly that way from the one focus
  * leaves, which focus crosses into only then.
  */
@@ -396,10 +491,28 @@ function barGap(
   return gap >= -1 ? gap : null;
 }
 
+/** A `data-nav-wait` box, as a row still loading, lies that way before `to`. */
+function waitsFor(
+  root: Element,
+  rect: DOMRect,
+  to: HTMLElement | null,
+  dir: Direction
+): boolean {
+  const boxes = root.querySelectorAll('[data-nav-wait]');
+  if (!boxes.length) return false;
+  const past = to && distance(rect, rectOf(to), dir);
+  for (const box of boxes) {
+    const way = distance(rect, settled(box, box.getBoundingClientRect()), dir);
+    if (way?.inLine && (!past || way.gap < past.gap)) return true;
+  }
+  return false;
+}
+
 /**
  * Focus coming into a box from outside lands on what its `data-nav-enter`
- * selector names. From outside any group, a `data-nav-group` is entered where
- * focus last was there, else at the start of the row it lands in.
+ * selector names. From outside any group, or into a `data-nav-resume` row from
+ * anywhere, a `data-nav-group` is entered where focus last was there, else at
+ * the start of the row it lands in.
  */
 function entry(to: HTMLElement, from: HTMLElement): HTMLElement {
   const box = to.closest<HTMLElement>('[data-nav-enter]');
@@ -408,8 +521,9 @@ function entry(to: HTMLElement, from: HTMLElement): HTMLElement {
     if (named && canFocus(named)) return named;
   }
   const group = to.closest(GROUP);
+  if (!group || group.contains(from)) return to;
   // From another group, as from one row to the next, the one beside it.
-  if (!group || group.contains(from) || from.closest(GROUP)) return to;
+  if (from.closest(GROUP) && !to.closest('[data-nav-resume]')) return to;
   const last = lastIn.get(group);
   if (last && group.contains(last) && canFocus(last)) return last;
   const row = rectOf(to);
@@ -450,7 +564,7 @@ const lastIn = new WeakMap<Element, HTMLElement>();
 
 export function remember(el: Element): void {
   if (!(el instanceof HTMLElement)) return;
-  for (let group = el.closest(GROUP); group; ) {
+  for (let group = el.closest(GROUP); group;) {
     lastIn.set(group, el);
     group = group.parentElement?.closest(GROUP) ?? null;
   }
@@ -503,13 +617,16 @@ export function startOf(root: ParentNode = document): HTMLElement | null {
   return el && canFocus(el) ? el : null;
 }
 
-/** The page's start, else the first thing on screen, in its main content where it has one. */
+/** The page's start, else the first thing on screen in its main content, before any navigation there. */
 function first(root: Element): HTMLElement | null {
   const start = startOf(root);
   if (start) return start;
   const area = root.querySelector('main') ?? root;
   const all = (el: Element) => [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
   return (
+    all(area).find(
+      (el) => onScreen(el) && canFocus(el) && !el.closest('nav')
+    ) ??
     all(area).find((el) => onScreen(el) && canFocus(el)) ??
     all(root).find((el) => canFocus(el)) ??
     null
@@ -528,6 +645,40 @@ function shortfall(
   if (start < view.start + room) return start - view.start - room;
   if (end > view.end - room) return end - view.end + room;
   return 0;
+}
+
+/** Whether `el` is the first, or last, that focus reaches in `box`. */
+function atEdge(box: Element, el: HTMLElement, last: boolean): boolean {
+  const all = box.querySelectorAll<HTMLElement>(FOCUSABLE);
+  const step = last ? -1 : 1;
+  for (let i = last ? all.length - 1 : 0; i >= 0 && i < all.length; i += step)
+    if (!ruledOut(all[i]) && all[i].getClientRects().length)
+      return all[i] === el;
+  return false;
+}
+
+/** To its start or end for its first or last focusable, so what lies past that shows too. */
+function toEdge(
+  box: Element,
+  el: HTMLElement,
+  rect: DOMRect,
+  view: DOMRect,
+  top: number
+): number | null {
+  const end = box.scrollHeight - box.clientHeight;
+  if (
+    top > 0 &&
+    rect.bottom + top <= view.bottom - 24 &&
+    atEdge(box, el, false)
+  )
+    return -top;
+  if (
+    top < end &&
+    rect.top - (end - top) >= view.top + 24 &&
+    atEdge(box, el, true)
+  )
+    return end - top;
+  return null;
 }
 
 function shownBox(el: HTMLElement): Element {
@@ -571,12 +722,13 @@ function reveal(el: HTMLElement): void {
       ? 0
       : box.hasAttribute('data-nav-snap')
         ? Math.round(rect.top - view.top - 24)
-        : shortfall(
+        : (toEdge(box, el, rect, view, top) ??
+          shortfall(
             { start: view.top, end: view.bottom },
             rect.top,
             rect.bottom,
             24
-          );
+          ));
     const dx = scrollsX
       ? shortfall(
           { start: view.left, end: view.right },
@@ -645,6 +797,13 @@ let lastMove: { from: HTMLElement; to: HTMLElement; dir: Direction } | null =
  */
 const cameFrom = new WeakMap<Element, HTMLElement>();
 
+/** A side a `data-nav-*` mark names; `start` and `end` follow the page's direction. */
+export function navSide(value: string | undefined): Direction | undefined {
+  if (value === 'start') return pageRtl() ? 'right' : 'left';
+  if (value === 'end') return pageRtl() ? 'left' : 'right';
+  return value as Direction | undefined;
+}
+
 /** Moves focus to the nearest thing that way; nothing focused starts at the first. */
 export function move(dir: Direction): boolean {
   const root = scope();
@@ -652,6 +811,8 @@ export function move(dir: Direction): boolean {
   if (
     !(from instanceof HTMLElement) ||
     from === document.body ||
+    // A dialog holds focus itself once what had it is gone.
+    from === root ||
     !root.contains(from)
   ) {
     const start = first(root);
@@ -659,7 +820,7 @@ export function move(dir: Direction): boolean {
     return !!start;
   }
   const exit = from.closest<HTMLElement>('[data-nav-exit]');
-  const out = exit?.dataset.navExit === dir;
+  const out = navSide(exit?.dataset.navExit) === dir;
   const came = out ? cameFrom.get(exit!) : undefined;
   if (came?.isConnected && canFocus(came)) {
     moveTo(came, dir);
@@ -678,12 +839,12 @@ export function move(dir: Direction): boolean {
     if (x || y) drifts.push([box, x, y]);
   }
   // Any other way stays in such a box, as what it covers lies beside it.
-  const near =
-    back && canFocus(back)
-      ? back
-      : nearest(exit && !out ? exit : root, from, dir);
+  const within = exit && !out ? exit : root;
+  const near = back && canFocus(back) ? back : nearest(within, from, dir);
+  const wait = waitsFor(within, rectOf(from), near, dir);
   bars = null;
   drifts = [];
+  if (wait) return true;
   const grid = from.closest('[data-nav-wrap]');
   if (!near || (grid && near !== back && !grid.contains(near))) {
     const next = wrapped(from, dir);
@@ -711,10 +872,10 @@ export function moveTo(to: HTMLElement, dir: Direction): void {
     return focusOn(to);
   }
   const box = to.closest<HTMLElement>('[data-nav-exit]');
-  const exit = box && !box.contains(from) && box.dataset.navExit;
+  const exit = box && !box.contains(from) && navSide(box.dataset.navExit);
   if (exit) cameFrom.set(box, from);
   // Into such a box, only its exit leads back.
-  lastMove = { from, to, dir: exit ? OPPOSITE[exit as Direction] : dir };
+  lastMove = { from, to, dir: exit ? OPPOSITE[exit] : dir };
   focusOn(to);
 }
 

@@ -1,3 +1,4 @@
+import React from 'react';
 import type { IconType } from 'react-icons';
 import { LuExternalLink } from 'react-icons/lu';
 import {
@@ -25,7 +26,7 @@ const ICONS: Record<string, IconType> = {
   anidb: AnidbIcon,
 };
 
-export function ExternalLinks({
+export const ExternalLinks = React.memo(function ExternalLinks({
   links,
 }: {
   links: { Name?: string | null; Url?: string | null }[] | null | undefined;
@@ -47,6 +48,8 @@ export function ExternalLinks({
             key={link.Url}
             trigger={
               <Anchor
+                data-ui="external-link"
+                data-name={link.Name.toLowerCase()}
                 href={link.Url}
                 target="_blank"
                 rel="noreferrer"
@@ -68,4 +71,4 @@ export function ExternalLinks({
       })}
     </div>
   );
-}
+});

@@ -94,11 +94,30 @@ function recent(saved: SavedQuery): boolean {
 }
 
 /** The fetch stamps what it returns as new, so the real age goes back after. */
-function stampLater(query: Query, savedAt: number, refetch: boolean) {
-  setTimeout(() => {
-    query.setState({ dataUpdatedAt: savedAt });
-    if (refetch) void query.fetch().catch(() => undefined);
-  });
+function stampLater(query: Query, savedAt: number) {
+  setTimeout(() => query.setState({ dataUpdatedAt: savedAt }));
+}
+
+/** Read lazily: TanStack cancels a query whose signal was read once nothing shows it. */
+function withSignal(
+  context: QueryFunctionContext<QueryKey>,
+  dropped: AbortController
+): QueryFunctionContext<QueryKey> {
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(context),
+      signal: {
+        enumerable: true,
+        get: () => {
+          const own = context.signal;
+          if (own.aborted) dropped.abort();
+          else own.addEventListener('abort', () => dropped.abort());
+          return dropped.signal;
+        },
+      },
+    }
+  ) as QueryFunctionContext<QueryKey>;
 }
 
 /**
@@ -116,19 +135,49 @@ export async function persister(
   if (!category || !saving(category) || signedOut.has(scope))
     return queryFn(context);
   const shown = query.state;
+  const save = (data: unknown) =>
+    void writeQuery({ id: query.queryHash, category, scope }, Date.now(), data)
+      .then(schedulePrune)
+      .catch(() => undefined);
+  // Sent before the read, whose answer waits for the main thread to finish drawing.
+  // Behind a saved copy it outlives TanStack's own fetch, so it is dropped here
+  // once nothing shows the query.
+  const dropped = new AbortController();
+  const stop = context.client.getQueryCache().subscribe((event) => {
+    if (
+      event.type === 'observerRemoved' &&
+      event.query === query &&
+      !query.getObserversCount()
+    )
+      dropped.abort();
+  });
+  const asked =
+    shown.data === undefined && isReachable()
+      ? Promise.resolve(queryFn(withSignal(context, dropped)))
+      : null;
+  if (asked) asked.then(stop, stop);
+  else stop();
   const saved =
     shown.data === undefined
       ? await readQuery(query.queryHash).catch(() => null)
       : null;
   if (saved && recent(saved)) {
-    stampLater(query, saved.savedAt, isReachable());
+    stampLater(query, saved.savedAt);
+    // A timer after the stamp's, and only over the saved copy, not anything newer.
+    void asked?.then(
+      (data) =>
+        setTimeout(() => {
+          if (query.state.dataUpdatedAt !== saved.savedAt) return;
+          query.setData(data);
+          save(data);
+        }),
+      () => undefined
+    );
     return saved.data;
   }
   try {
-    const data = await queryFn(context);
-    void writeQuery({ id: query.queryHash, category, scope }, Date.now(), data)
-      .then(schedulePrune)
-      .catch(() => undefined);
+    const data = await (asked ?? queryFn(context));
+    save(data);
     return data;
   } catch (error) {
     if (!(error instanceof ConnectionError)) throw error;
@@ -138,7 +187,7 @@ export async function persister(
         ? { data: shown.data, savedAt: shown.dataUpdatedAt }
         : null);
     if (!kept) throw error;
-    stampLater(query, kept.savedAt, false);
+    stampLater(query, kept.savedAt);
     return kept.data;
   }
 }

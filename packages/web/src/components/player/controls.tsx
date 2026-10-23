@@ -1,3 +1,5 @@
+import { plural, t } from '@lingui/core/macro';
+import { Trans } from '@lingui/react/macro';
 import React from 'react';
 import {
   LuArrowLeft,
@@ -15,14 +17,22 @@ import { LoadingSpinner } from '@aiostreams/ui/loading-spinner';
 import { cn } from '@aiostreams/ui/core/styling';
 import { clock, itemSubtitle, itemTitle } from '../../lib/format';
 import { currentHost } from '../../lib/hosts';
+import { formatLocale } from '../../lib/i18n';
 import { appBridge } from '../../lib/hosts/shell/bridge';
 import type { PlayerController } from '../../lib/playback/controller';
 import { settings, useSetting } from '../../lib/settings';
-import { delayLabel } from '../../lib/subtitles/delay';
+import { delayNotice, syncNotice } from '../../lib/subtitles/delay';
 import { useLatest } from '../../lib/use-latest';
 import type { BaseItemDto, MediaSegmentDto } from '../../lib/types';
-import { ControlButton, MiddleButton, PlayerAction } from './buttons';
 import {
+  ControlButton,
+  ControlsShown,
+  MiddleButton,
+  PlayerAction,
+} from './buttons';
+import { EpisodesSheet } from './episodes';
+import {
+  Notice,
   ScrubReadout,
   SpeedPill,
   useNotice,
@@ -33,7 +43,7 @@ import { usePlayerGestures } from './gestures';
 import { useBurstSeek, useFileDrop, useIdle, usePositionClock } from './hooks';
 import { usePlayerKeys } from './keys';
 import { ScreenLock } from './lock';
-import { canFit, FIT_LABELS, OptionButtons } from './options';
+import { fitLabel, OptionButtons } from './options';
 import { SeekBar } from './seek-bar';
 import { skipLabel, useSegmentSkip } from './segments';
 import { useHeldSpeed } from './speed';
@@ -41,7 +51,7 @@ import { SyncByEar, SyncToLine } from './subtitle-sync';
 import { Volume } from './volume';
 import { usePlayhead, type Playhead } from '../../lib/playback/playhead';
 
-const IDLE_MS = 2000;
+const IDLE_MS = 5000;
 
 interface Transport {
   name: string;
@@ -58,8 +68,12 @@ export function PlayerControls({
   onVersions,
   onPrevious,
   onNext,
-  loadingEpisode,
+  onEpisode,
+  loadingEpisode = null,
   offeringNext = false,
+  caption,
+  steps,
+  onParty,
 }: {
   item: BaseItemDto;
   player: PlayerController;
@@ -68,8 +82,14 @@ export function PlayerControls({
   onVersions?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
-  loadingEpisode?: 'previous' | 'next' | null;
+  onEpisode?: (episode: BaseItemDto) => void;
+  loadingEpisode?: string | null;
   offeringNext?: boolean;
+  /** Under the title, in place of an episode's own line. */
+  caption?: string;
+  /** What previous and next move between, where it isn't the show's episodes. */
+  steps?: 'episode' | 'trailer';
+  onParty?: () => void;
 }) {
   const { state } = player;
   const latest = useLatest(player);
@@ -89,23 +109,30 @@ export function PlayerControls({
     resume: boolean;
   } | null>(null);
   const [byEar, setByEar] = React.useState(false);
+  const [episodes, setEpisodes] = React.useState(false);
   const [scrub, setScrub] = React.useState<{
     fromMs: number;
     toMs: number;
   } | null>(null);
   const scrubbing = React.useRef(scrub);
-  // A player in its own window is watched there.
+  // Until the first frame only Back works; a player in its own window is watched there.
+  const ready = state.started || !!player.external;
   const visible =
     !!player.external ||
-    (!locked &&
+    (ready &&
+      !locked &&
       !hidden &&
       (!idle ||
         state.paused ||
         menus > 0 ||
-        !state.started ||
         picking !== null ||
         byEar ||
+        episodes ||
         scrub !== null));
+  // The video appears without the controls, unless it opens paused.
+  React.useEffect(() => {
+    if (ready && !latest.current.state.paused) hide();
+  }, [ready, latest, hide]);
   useWindowButtons(visible);
   useFocusInside(root, visible, wake);
   useLiftSubtitles(player, bottomBar, visible);
@@ -113,14 +140,21 @@ export function PlayerControls({
   const [flash, showFlash] = useToggleFlash();
   const [seekFlash, showSeekFlash] = useSeekFlash();
   const [notice, showNotice] = useNotice();
+  const syncOutcome = player.autoSync?.outcome;
+  React.useEffect(() => {
+    const text = syncOutcome && syncNotice(syncOutcome);
+    if (text) showNotice(text, 'failed' in syncOutcome ? 4000 : 2000);
+  }, [syncOutcome, showNotice]);
   const togglePlay = () => {
     showFlash(latest.current.state.paused);
     latest.current.togglePlay();
   };
 
-  const [seekStep] = useSetting(settings.seekStep);
-  const burstSeek = useBurstSeek(player);
-  const seekBy = (deltaMs: number) => {
+  const [seekStep] = useSetting(settings.controls.seekStep);
+  const [burstSeek, seekingTo] = useBurstSeek(player);
+  const [tapSeek, setTapSeek] = React.useState(false);
+  const seekBy = (deltaMs: number, tapped = false) => {
+    setTapSeek(tapped);
     burstSeek(deltaMs);
     showSeekFlash(deltaMs);
   };
@@ -152,18 +186,21 @@ export function PlayerControls({
   const fileInput = React.useRef<HTMLInputElement>(null);
   const addSubtitleFile = (file: File) =>
     latest.current.subtitleFiles?.add(file).then(
-      () => showNotice(`Added ${file.name}`),
+      () => {
+        const { name } = file;
+        showNotice(t`Added ${name}`);
+      },
       (e: Error) => showNotice(e.message)
     );
   const dragging = useFileDrop(
     player.subtitleFiles ? addSubtitleFile : undefined
   );
 
-  const [fit, setFit] = useSetting(settings.videoFit);
+  const [fit, setFit] = useSetting(settings.video.fit);
   const shown = useLatest(visible);
   const gestures = usePlayerGestures({
     player,
-    seekBy,
+    seekBy: (deltaMs) => seekBy(deltaMs, true),
     seekStepMs: seekStep * 1000,
     notice: showNotice,
     onTap: () => (shown.current ? hide() : wake()),
@@ -189,12 +226,13 @@ export function PlayerControls({
         latest.current.seek(s.toMs);
       wake();
     },
-    onPinch: canFit(player)
+    onPinch: player.fit
       ? (out) => {
           const next = out ? 'crop' : 'fit';
           if (next === fit) return;
           setFit(next);
-          showNotice(`Picture: ${FIT_LABELS[next]}`);
+          const label = fitLabel(next);
+          showNotice(t`Picture: ${label}`);
         }
       : undefined,
   });
@@ -202,6 +240,7 @@ export function PlayerControls({
   usePlayerKeys({
     player,
     root,
+    ready,
     visible,
     wake,
     hide,
@@ -221,33 +260,48 @@ export function PlayerControls({
     visible ? 'opacity-100 [&>*]:pointer-events-auto' : 'opacity-0'
   );
   const isEpisode = item.Type === 'Episode';
+  const listsEpisodes = isEpisode && !!item.SeriesId && !!onEpisode;
+  const stepping = steps ?? (isEpisode ? 'episode' : undefined);
+  const stepSeconds = seekStep;
+  const subtitle = caption ?? (isEpisode ? itemSubtitle(item) : undefined);
   const spinner = <LuLoaderCircle className="animate-spin" />;
   const buttons: Record<string, Transport | false> = {
-    previous: isEpisode && {
+    previous: !!stepping && {
       name: 'previous',
-      label: 'Previous episode',
+      label: stepping === 'trailer' ? t`Previous trailer` : t`Previous episode`,
       icon: loadingEpisode === 'previous' ? spinner : <LuSkipBack />,
       onClick: onPrevious,
     },
-    back: !touch && {
-      name: 'back',
-      label: `Back ${seekStep} seconds`,
-      icon: <LuRotateCcw />,
-      onClick: () => seekBy(-seekStep * 1000),
-    },
-    forward: !touch && {
-      name: 'forward',
-      label: `Forward ${seekStep} seconds`,
-      icon: <LuRotateCw />,
-      onClick: () => seekBy(seekStep * 1000),
-    },
-    next: isEpisode && {
+    // A remote's arrows skip with the controls hidden, and the seek bar's with them up.
+    back: !touch &&
+      !tv && {
+        name: 'back',
+        label: plural(stepSeconds, {
+          one: 'Back # second',
+          other: 'Back # seconds',
+        }),
+        icon: <LuRotateCcw />,
+        onClick: () => seekBy(-seekStep * 1000),
+      },
+    forward: !touch &&
+      !tv && {
+        name: 'forward',
+        label: plural(stepSeconds, {
+          one: 'Forward # second',
+          other: 'Forward # seconds',
+        }),
+        icon: <LuRotateCw />,
+        onClick: () => seekBy(seekStep * 1000),
+      },
+    next: !!stepping && {
       name: 'next',
-      label: 'Next episode',
+      label: stepping === 'trailer' ? t`Next trailer` : t`Next episode`,
       icon: loadingEpisode === 'next' ? spinner : <LuSkipForward />,
       onClick: onNext,
     },
   };
+  // Where the middle buttons don't show.
+  const inBar = tv ? 'flex' : !touch && 'lg:flex';
   const middleShown = cn(
     !touch && 'lg:hidden',
     scrub ? 'pointer-events-none opacity-0' : fade
@@ -276,15 +330,29 @@ export function PlayerControls({
         {b.icon}
       </ControlButton>
     );
-  const time = (
-    <PlayerTime
-      playhead={player.playhead}
-      durationMs={state.durationMs}
-      live={visible}
-    />
-  );
+  const shownAt = scrub?.toMs ?? seekingTo;
+  const timeProps = { playhead: player.playhead, live: visible, atMs: shownAt };
 
-  return (
+  if (!ready)
+    return (
+      <div
+        data-ui="player-controls"
+        data-loading
+        className="fixed inset-0 z-10 select-none"
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {!tv && (
+          // Late, so a quick start never flashes it.
+          <div className="absolute start-[max(0.75rem,env(safe-area-inset-left))] top-[calc(0.75rem+env(safe-area-inset-top))] [animation:fade-in_300ms_ease-out_1.5s_both] sm:start-[max(1.25rem,env(safe-area-inset-left))] sm:top-[calc(1.25rem+env(safe-area-inset-top))]">
+            <ControlButton name="exit" label={t`Back`} onClick={onBack}>
+              <LuArrowLeft className="rtl:-scale-x-100" />
+            </ControlButton>
+          </div>
+        )}
+      </div>
+    );
+
+  const controls = (
     <div
       ref={root}
       data-ui="player-controls"
@@ -310,29 +378,34 @@ export function PlayerControls({
       <div
         data-ui="player-top-bar"
         className={cn(
-          'absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/80 to-transparent pb-12 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-[calc(0.75rem+env(safe-area-inset-top))] transition-opacity duration-300 sm:pl-[max(1.25rem,env(safe-area-inset-left))] sm:pr-[max(1.25rem,env(safe-area-inset-right))] sm:pt-[calc(1.25rem+env(safe-area-inset-top))]',
+          'absolute inset-x-0 top-0 flex items-center gap-3 bg-gradient-to-b from-black/80 to-transparent pb-12 ps-[max(0.75rem,env(safe-area-inset-left))] pe-[max(0.75rem,env(safe-area-inset-right))] pt-[calc(0.75rem+env(safe-area-inset-top))] transition-opacity duration-300 sm:ps-[max(1.25rem,env(safe-area-inset-left))] sm:pe-[max(1.25rem,env(safe-area-inset-right))] sm:pt-[calc(1.25rem+env(safe-area-inset-top))]',
           barFade
         )}
       >
-        <ControlButton name="exit" label="Back" onClick={onBack}>
-          <LuArrowLeft />
+        <ControlButton name="exit" label={t`Back`} onClick={onBack}>
+          <LuArrowLeft className="rtl:-scale-x-100" />
         </ControlButton>
         <div
           data-ui="player-title"
           className="min-w-0 text-[length:var(--title)]"
         >
-          <p className="truncate font-semibold">{itemTitle(item)}</p>
-          {isEpisode && (
-            <p className="truncate text-[0.875em] text-gray-300">
-              {itemSubtitle(item)}
+          <p data-name="name" className="truncate font-semibold">
+            {itemTitle(item)}
+          </p>
+          {subtitle && (
+            <p
+              data-name="detail"
+              className="truncate text-[0.875em] text-gray-300"
+            >
+              {subtitle}
             </p>
           )}
         </div>
         {touch && !tv && (
           <ControlButton
             name="lock"
-            label="Lock screen"
-            className="ml-auto"
+            label={t`Lock screen`}
+            className="ms-auto"
             onClick={() => {
               setLocked(true);
               hide();
@@ -350,12 +423,12 @@ export function PlayerControls({
         {middleButton(buttons.previous)}
         {middleButton(buttons.back)}
         {state.waiting && !state.error ? (
-          <LoadingSpinner containerClass="size-16 flex-none" iconClass="mr-0" />
+          <LoadingSpinner containerClass="size-16 flex-none" iconClass="me-0" />
         ) : (
           !tv && (
             <MiddleButton
               name="play"
-              label={state.paused ? 'Play' : 'Pause'}
+              label={state.paused ? t`Play` : t`Pause`}
               big
               onClick={togglePlay}
               className={middleShown}
@@ -370,7 +443,8 @@ export function PlayerControls({
 
       {!touch && <div className="contents max-lg:hidden">{flash}</div>}
       {seekFlash}
-      {notice}
+      {notice ||
+        (player.autoSync?.waiting && <Notice text={t`Syncing subtitles…`} />)}
       {scrub && (
         <ScrubReadout
           fromMs={scrub.fromMs}
@@ -386,7 +460,9 @@ export function PlayerControls({
         >
           <div className="rounded-2xl border-2 border-dashed border-white/40 px-10 py-8 text-center">
             <LuCaptions className="mx-auto mb-2 text-4xl" />
-            <p className="text-lg font-semibold">Drop to add subtitles</p>
+            <p className="text-lg font-semibold">
+              <Trans>Drop to add subtitles</Trans>
+            </p>
           </div>
         </div>
       )}
@@ -411,7 +487,7 @@ export function PlayerControls({
           onPick={(ms) => {
             player.setSubtitleDelay?.(ms);
             closePicker();
-            showNotice(`Subtitles ${delayLabel(ms).toLowerCase()}`);
+            showNotice(delayNotice(ms));
           }}
           onClose={closePicker}
         />
@@ -432,7 +508,7 @@ export function PlayerControls({
           data-type={segment.type}
           data-visible={visible || fresh || undefined}
           className={cn(
-            'absolute right-[max(1rem,env(safe-area-inset-right))] z-20 transition-[bottom,opacity] duration-300 sm:right-[max(2rem,env(safe-area-inset-right))]',
+            'absolute end-[max(1rem,env(safe-area-inset-right))] z-20 transition-[bottom,opacity] duration-300 sm:end-[max(2rem,env(safe-area-inset-right))]',
             visible
               ? 'bottom-[calc(7rem+env(safe-area-inset-bottom))] sm:bottom-[calc(8rem+env(safe-area-inset-bottom))]'
               : 'bottom-[calc(2rem+env(safe-area-inset-bottom))]',
@@ -454,32 +530,40 @@ export function PlayerControls({
         ref={bottomBar}
         data-ui="player-bottom-bar"
         className={cn(
-          'absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent pb-[calc(0.5rem+env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pt-16 transition-opacity duration-300 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pl-[max(1.25rem,env(safe-area-inset-left))] sm:pr-[max(1.25rem,env(safe-area-inset-right))]',
+          'absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent pb-[calc(0.5rem+env(safe-area-inset-bottom))] ps-[max(0.75rem,env(safe-area-inset-left))] pe-[max(0.75rem,env(safe-area-inset-right))] pt-16 transition-opacity duration-300 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:ps-[max(1.25rem,env(safe-area-inset-left))] sm:pe-[max(1.25rem,env(safe-area-inset-right))]',
           barFade
         )}
       >
-        <p
-          data-ui="player-time"
-          className="px-0.5 text-xs tabular-nums text-gray-200 sm:hidden"
+        <div
+          data-ui="player-info"
+          className="flex items-center justify-between gap-3 px-0.5 pb-1"
         >
-          {time}
-        </p>
+          <PlayerTime {...timeProps} durationMs={state.durationMs} />
+          <EndsAt
+            {...timeProps}
+            durationMs={state.durationMs}
+            rate={state.rate}
+          />
+        </div>
         <SeekBar
           playhead={player.playhead}
           live={visible}
           durationMs={state.durationMs}
           segments={segments}
           chapters={player.chapters ?? []}
-          previewMs={scrub?.toMs ?? null}
+          previewMs={shownAt}
+          previewPicture={!!scrub || !tapSeek}
           handle={touch}
+          thumbnails={player.thumbnails}
           onSeek={player.seek}
           onStep={(direction) => seekBy(direction * seekStep * 1000)}
+          onTogglePlay={togglePlay}
         />
         <div className="flex items-center gap-1">
-          <div className={cn('hidden items-center gap-1', !touch && 'lg:flex')}>
+          <div className={cn('hidden items-center gap-1', inBar)}>
             <ControlButton
               name="play"
-              label={state.paused ? 'Play' : 'Pause'}
+              label={state.paused ? t`Play` : t`Pause`}
               onClick={togglePlay}
             >
               {state.paused ? <LuPlay /> : <LuPause />}
@@ -490,23 +574,29 @@ export function PlayerControls({
             {barButton(buttons.next)}
           </div>
           {!touch && !tv && <Volume player={player} />}
-          <span
-            data-ui="player-time"
-            className="ml-2 hidden whitespace-nowrap text-[length:var(--time)] tabular-nums text-gray-200 sm:inline"
-          >
-            {time}
-          </span>
           <OptionButtons
             player={player}
             onMenu={onMenu}
             onVersions={onVersions}
+            onEpisodes={listsEpisodes ? () => setEpisodes(true) : undefined}
             onAddFile={() => fileInput.current?.click()}
             onSyncByEar={() => setByEar(true)}
             onSyncToLine={pickLine}
+            onParty={onParty}
             notice={showNotice}
           />
         </div>
       </div>
+
+      {listsEpisodes && (
+        <EpisodesSheet
+          item={item}
+          open={episodes}
+          loadingId={loadingEpisode}
+          onPlay={onEpisode}
+          onClose={() => setEpisodes(false)}
+        />
+      )}
 
       {locked && (
         <ScreenLock
@@ -517,6 +607,9 @@ export function PlayerControls({
         />
       )}
     </div>
+  );
+  return (
+    <ControlsShown.Provider value={visible}>{controls}</ControlsShown.Provider>
   );
 }
 
@@ -582,26 +675,79 @@ function useLiftSubtitles(
   React.useEffect(() => () => latest.current.liftSubtitles?.(0), [latest]);
 }
 
-function PlayerTime({
-  playhead,
-  durationMs,
-  live,
-}: {
+const TIME = 'text-xs tabular-nums sm:text-[length:var(--time)]';
+
+const SOFT_FOCUS =
+  '[html:not([data-pointer-focus])_&:focus-visible]:bg-white/20 [html:not([data-pointer-focus])_&:focus-visible]:text-white';
+
+interface TimeProps {
   playhead: Playhead;
-  durationMs: number;
   live: boolean;
-}) {
+  /** Shown in place of the playhead, as a seek is under way. */
+  atMs: number | null;
+}
+
+function usePlayedMs({ playhead, live, atMs }: TimeProps): number {
   const seconds = usePlayhead(
     playhead,
     (h) => Math.floor(h.positionMs / 1000),
     live
   );
+  return atMs ?? seconds * 1000;
+}
+
+function PlayerTime({
+  durationMs,
+  ...props
+}: TimeProps & { durationMs: number }) {
+  const at = usePlayedMs(props);
+  const [left, setLeft] = useSetting(settings.controls.timeLeft);
+  const showLeft = left && durationMs > 0;
   return (
-    <>
-      {clock(seconds * 1000)}
+    <button
+      type="button"
+      data-ui="player-time"
+      data-focus="own"
+      dir="ltr"
+      title={showLeft ? t`Show time played` : t`Show time left`}
+      className={cn(
+        TIME,
+        '-mx-1.5 rounded-md px-1.5 py-0.5 text-gray-200 transition-colors hover:text-white',
+        SOFT_FOCUS
+      )}
+      onClick={() => setLeft(!left)}
+    >
+      {showLeft ? `-${clock(durationMs - at)}` : clock(at)}
       {durationMs > 0 && (
         <span className="text-gray-400"> / {clock(durationMs)}</span>
       )}
-    </>
+    </button>
+  );
+}
+
+function EndsAt({
+  durationMs,
+  rate,
+  ...props
+}: TimeProps & { durationMs: number; rate: number }) {
+  const at = usePlayedMs(props);
+  // The end moves on while paused.
+  const [, tick] = React.useReducer((n: number) => n + 1, 0);
+  React.useEffect(() => {
+    if (!props.live) return;
+    const timer = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(timer);
+  }, [props.live]);
+  if (durationMs <= 0) return null;
+  const endsAt = new Date(
+    Date.now() + Math.max(0, durationMs - at) / (rate || 1)
+  ).toLocaleTimeString(formatLocale(), { hour: 'numeric', minute: '2-digit' });
+  return (
+    <p
+      data-ui="player-ends"
+      className={cn(TIME, 'whitespace-nowrap text-gray-400')}
+    >
+      {t`Ends at ${endsAt}`}
+    </p>
   );
 }

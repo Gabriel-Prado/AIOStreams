@@ -2,6 +2,7 @@ import React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { configSessionToken, hasConfigSessionCookie } from './config-session';
 import { JellyfinClient, JellyfinError } from './client';
+import { currentHost } from './hosts';
 import {
   clearCredentials,
   readCredentials,
@@ -9,9 +10,11 @@ import {
   signedOut,
 } from './credentials';
 import { storage } from './storage';
-import { syncPreferences } from './settings';
+import { settings, syncPreferences } from './settings';
+import { useLatest } from './use-latest';
 import { forgetSavedUser, forgetUser, savedUser, saveUser } from './cache';
 import { watchServer } from './connection';
+import { startOver, to } from './paths';
 import type {
   AuthenticationResult,
   Branding,
@@ -55,6 +58,12 @@ export type SessionPhase =
   | { kind: 'ready'; client: JellyfinClient; user: UserDto };
 
 const lastUserKey = (base: string) => `aiostreams-web-last-user:${base}`;
+/**
+ * The user who left for the picker here. Until then a user with a PIN stays
+ * unlocked; after, they need it to come back, even once the app restarts.
+ */
+const leftKey = (base: string) => `aiostreams-web-left-user:${base}`;
+const AWAY_MS = 30 * 60_000;
 
 /** Ends the token on the server and forgets the sign-in here. */
 export function endSession(base: string, token: string | null): void {
@@ -66,6 +75,8 @@ export function endSession(base: string, token: string | null): void {
   forgetUser(base, readCredentials(base)?.userId);
   clearCredentials(base);
   storage.remove(lastUserKey(base));
+  storage.remove(leftKey(base));
+  currentHost().watchNext?.([]);
 }
 
 /** The configuration page's hand-off, which asks first when the account has a PIN. */
@@ -106,6 +117,7 @@ export function useSessionPhase(base: string) {
         userId: user.Id!,
       });
       storage.set(lastUserKey(base), user.Id);
+      storage.remove(leftKey(base));
       saveUser(base, user);
       setPhase({
         kind: 'ready',
@@ -128,6 +140,41 @@ export function useSessionPhase(base: string) {
     [adopt, queryClient]
   );
 
+  /**
+   * `stay`, still signed in here, carries on without a PIN. Whoever is picked
+   * starts on Home, with no way back to the pages before.
+   */
+  const pick = React.useCallback(
+    async (proof: JellyfinClient, users: PickableUser[], stay?: UserDto) => {
+      // Before the session's router unmounts: mounted again, it doesn't load a place it moved to meanwhile.
+      await startOver(to.home);
+      setPhase({
+        kind: 'picking',
+        client: proof,
+        users: users.map((u) =>
+          stay && u.user.Id === stay.Id ? { ...u, needs: null } : u
+        ),
+        choose: async (id, secret) => {
+          if (!stay || id !== stay.Id) return switchTo(proof, id, secret);
+          setPhase({ kind: 'ready', client: proof, user: stay });
+        },
+      });
+    },
+    [switchTo]
+  );
+
+  /** Who to pick from as the app opens, or null to carry on as before. */
+  const askWho = React.useCallback(
+    async (proof: JellyfinClient, left: boolean) => {
+      if (!left && !settings.account.askWho.read()) return null;
+      const users = await proof
+        .get<PickableUser[]>('/AIOStreams/Users')
+        .catch(() => null);
+      return users && (left || users.length > 1) ? users : null;
+    },
+    []
+  );
+
   /** Takes the only user or the last one used, and asks otherwise. */
   const enter = React.useCallback(
     async (proof: JellyfinClient, signedIn?: AuthenticationResult) => {
@@ -142,20 +189,19 @@ export function useSessionPhase(base: string) {
       const last = storage.get<string>(lastUserKey(base));
       const target =
         users.length === 1 ? users[0] : users.find((u) => u.user.Id === last);
-      if (!target || target.needs) {
-        setPhase({
-          kind: 'picking',
-          client: proof,
-          users,
-          choose: (id, secret) => switchTo(proof, id, secret),
-        });
-      } else if (signedIn && signedIn.User?.Id === target.user.Id) {
+      if (target && signedIn && signedIn.User?.Id === target.user.Id) {
         adopt(proof, signedIn);
+      } else if (
+        !target ||
+        target.needs ||
+        (settings.account.askWho.read() && users.length > 1)
+      ) {
+        pick(proof, users);
       } else {
         await switchTo(proof, target.user.Id!);
       }
     },
-    [adopt, base, switchTo]
+    [adopt, base, pick, switchTo]
   );
 
   const [attempt, setAttempt] = React.useState(0);
@@ -173,14 +219,21 @@ export function useSessionPhase(base: string) {
         const client = anonymous.withToken(stored.token);
         // Opens with the saved user at once; the server's answer replaces it.
         const saved = savedUser(base, stored.userId);
-        if (saved && !cancelled)
+        const left = storage.get<string>(leftKey(base)) === stored.userId;
+        const mayAsk = left || settings.account.askWho.read();
+        if (saved && !mayAsk && !cancelled)
           setPhase({ kind: 'ready', client, user: saved });
-        const me = await client.get<UserDto>('/Users/Me').then(
-          (user) => ({ user }),
-          (error: unknown) => ({ error })
-        );
+        const [me, asking] = await Promise.all([
+          client.get<UserDto>('/Users/Me').then(
+            (user) => ({ user }),
+            (error: unknown) => ({ error })
+          ),
+          askWho(client, left),
+        ]);
         if ('user' in me) {
           saveUser(base, me.user);
+          if (!cancelled && asking)
+            return pick(client, asking, left ? undefined : me.user);
           if (!cancelled)
             setPhase((current) =>
               current.kind === 'ready' &&
@@ -192,10 +245,19 @@ export function useSessionPhase(base: string) {
           return;
         }
         if (!isUnauthorized(me.error)) {
-          if (!cancelled && !saved) setPhase({ kind: 'unreachable' });
+          // Out of reach, a PIN can't be checked, so the last user comes in.
+          if (!cancelled)
+            setPhase((current) =>
+              current.kind === 'ready'
+                ? current
+                : saved
+                  ? { kind: 'ready', client, user: saved }
+                  : { kind: 'unreachable' }
+            );
           return;
         }
         forgetSavedUser(base);
+        await startOver(to.home);
       }
       if (!__STANDALONE__ && hasConfigSessionCookie() && !signedOut(base)) {
         const auth = await configSessionToken<WebTokenResult>().catch(
@@ -211,7 +273,6 @@ export function useSessionPhase(base: string) {
                 {
                   user: auth.User,
                   avatar: auth.avatar,
-                  hidden: false,
                   needs: 'pin',
                 },
               ],
@@ -241,7 +302,7 @@ export function useSessionPhase(base: string) {
     return () => {
       cancelled = true;
     };
-  }, [base, enter, attempt]);
+  }, [base, enter, pick, askWho, attempt]);
 
   const signIn = React.useCallback(
     async (username: string, password: string) => {
@@ -275,15 +336,35 @@ export function useSessionPhase(base: string) {
     if (phase.kind !== 'ready') return;
     const proof = phase.client;
     const users = await proof.get<PickableUser[]>('/AIOStreams/Users');
-    setPhase({
-      kind: 'picking',
-      client: proof,
-      users,
-      choose: (id, secret) => switchTo(proof, id, secret),
-    });
-  }, [phase, switchTo]);
+    storage.set(leftKey(base), phase.user.Id);
+    await pick(proof, users);
+  }, [base, phase, pick]);
 
-  const signOut = React.useCallback(() => {
+  // Back after a while away counts as opening the app.
+  const latest = useLatest({ phase, pick, askWho });
+  React.useEffect(() => {
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      if (document.hidden) return void (hiddenAt = Date.now());
+      const away = hiddenAt > 0 && Date.now() - hiddenAt >= AWAY_MS;
+      hiddenAt = 0;
+      const { phase, pick, askWho } = latest.current;
+      if (
+        !away ||
+        phase.kind !== 'ready' ||
+        location.hash.startsWith('#/play/')
+      )
+        return;
+      void askWho(phase.client, false).then(
+        (users) => users && pick(phase.client, users, phase.user)
+      );
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [latest]);
+
+  const signOut = React.useCallback(async () => {
+    await startOver(to.home);
     endSession(base, phase.kind === 'ready' ? phase.client.token : null);
     queryClient.removeQueries({ queryKey: ['jf'] });
     setPhase({ kind: 'signed-out' });

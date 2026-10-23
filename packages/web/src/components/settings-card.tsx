@@ -4,20 +4,19 @@ import { Card } from '@aiostreams/ui/card';
 import { cn } from '@aiostreams/ui/core/styling';
 
 export function SettingsCard({
+  name,
   title,
   description,
   children,
 }: {
+  /** `data-name`, which custom CSS matches, so it stays in English. */
+  name?: string;
   title?: string;
   description?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <div
-      data-ui="settings-card"
-      data-name={title?.toLowerCase().replace(/[^a-z0-9]+/g, '-')}
-      className="space-y-3"
-    >
+    <div data-ui="settings-card" data-name={name} className="space-y-3">
       {(title || description) && (
         <div>
           {title && (
@@ -26,7 +25,12 @@ export function SettingsCard({
             </p>
           )}
           {description && (
-            <p className="text-sm text-[--muted]">{description}</p>
+            <p
+              data-ui="settings-card-description"
+              className="text-sm text-[--muted]"
+            >
+              {description}
+            </p>
           )}
         </div>
       )}
@@ -36,7 +40,10 @@ export function SettingsCard({
       >
         {React.Children.map(children, (child) =>
           child ? (
-            <div className="p-3 transition-colors hover:bg-gray-900">
+            <div
+              data-ui="settings-card-item"
+              className="p-3 transition-colors hover:bg-gray-900"
+            >
               {child}
             </div>
           ) : null
@@ -64,7 +71,9 @@ export function SettingsPageHeader({
         <h2 data-ui="section-title" className="text-xl font-semibold">
           {title}
         </h2>
-        <p className="text-[--muted]">{description}</p>
+        <p data-ui="settings-header-description" className="text-[--muted]">
+          {description}
+        </p>
       </div>
     </div>
   );

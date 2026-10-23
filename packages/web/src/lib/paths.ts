@@ -32,6 +32,8 @@ export const to = {
   person: (personId: string) => `/person/${personId}`,
   play: (itemId: string, sourceId: string, startMs = 0) =>
     `/play/${itemId}?source=${sourceId}${startMs ? `&start=${Math.round(startMs)}` : ''}`,
+  trailer: (itemId: string, index = 0) =>
+    `/play/trailer/${itemId}${index ? `?trailer=${index}` : ''}`,
 };
 
 /** An episode has no page of its own; it opens its show at its season. */
@@ -71,17 +73,28 @@ interface NavigateOptions {
 }
 
 type Push = (path: string, opts: NavigateOptions) => void;
+type Restart = (path: string) => Promise<void>;
 
 let push: Push = (path) => {
   window.location.hash = path;
 };
 
-export function setNavigator(fn: Push): void {
+let restart: Restart = async (path) => {
+  window.location.hash = path;
+};
+
+export function setNavigator(fn: Push, fresh: Restart): void {
   push = fn;
+  restart = fresh;
 }
 
 export function navigate(path: string, opts: NavigateOptions = {}) {
   push(path, opts);
+}
+
+/** `path` as the history's first entry, so back can't reach the pages before it. */
+export function startOver(path: string): Promise<void> {
+  return restart(path);
 }
 
 /** Back where the user came from, or to `fallback` on a page opened directly. */

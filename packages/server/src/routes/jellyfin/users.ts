@@ -1,5 +1,4 @@
-import { createHash } from 'crypto';
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import {
   config as appConfig,
   createLogger,
@@ -14,9 +13,16 @@ import {
   serverId as instanceServerId,
   sessionKeyFor,
   msToTicks,
+  AUDIO_TYPES,
   SUBTITLE_MODES,
+  SUBTITLE_TYPES,
   WatchSessionRepository,
+  buildMediaStreams,
+  resolveByItem,
+  resolveByPlaySession,
+  subtitleFormatFor,
   type ClientInfo,
+  type JellyfinMediaStream,
   type JellyfinPersona,
   type UserData,
   type WatchScope,
@@ -40,8 +46,11 @@ import {
   resolvePickerAlias,
   type JellyfinRequestContext,
 } from './context.js';
-import { summaryItem } from './items.js';
+import { subtitleUrlFor, summaryItem } from './items.js';
+import { pickSource } from './playback.js';
 import { serverName } from './system.js';
+import { sessionIdOf } from './session-sockets.js';
+import { controllableDevices, type RemoteDevice } from './remote.js';
 
 const logger = createLogger('jellyfin');
 const router: Router = Router({ mergeParams: true });
@@ -51,8 +60,11 @@ export function userConfiguration() {
     AudioLanguagePreference: '',
     AudioLanguages: [] as string[],
     PlayDefaultAudioTrack: true,
+    AudioTypes: [...AUDIO_TYPES] as string[],
     SubtitleLanguagePreference: '',
     SubtitleLanguages: [] as string[],
+    SubtitleTypes: [...SUBTITLE_TYPES] as string[],
+    ListPreferredSubtitlesOnly: true,
     DisplayMissingEpisodes: true,
     GroupedFolders: [],
     SubtitleMode: 'Default',
@@ -70,6 +82,11 @@ export function userConfiguration() {
 }
 
 const isLanguage = (v: unknown) => typeof v === 'string' && v.length <= 16;
+const isRanking = (all: readonly string[]) => (v: unknown) =>
+  Array.isArray(v) &&
+  v.length <= all.length &&
+  new Set(v).size === v.length &&
+  v.every((t) => all.includes(t));
 const isLanguageList = (v: unknown) =>
   Array.isArray(v) && v.length <= 10 && v.every((l) => isLanguage(l) && l);
 
@@ -80,6 +97,9 @@ const USER_PREFERENCES: Record<string, (value: unknown) => boolean> = {
   SubtitleLanguagePreference: isLanguage,
   SubtitleLanguages: isLanguageList,
   SubtitleMode: (v) => SUBTITLE_MODES.some((mode) => mode === v),
+  SubtitleTypes: isRanking(SUBTITLE_TYPES),
+  AudioTypes: isRanking(AUDIO_TYPES),
+  ListPreferredSubtitlesOnly: (v) => typeof v === 'boolean',
   PlayDefaultAudioTrack: (v) => typeof v === 'boolean',
   RememberAudioSelections: (v) => typeof v === 'boolean',
   RememberSubtitleSelections: (v) => typeof v === 'boolean',
@@ -125,7 +145,9 @@ export async function storedUserConfiguration(scope: WatchScope) {
   return { ...userConfiguration(), ...userPreferences(stored) };
 }
 
-export function userPolicy(opts: { admin?: boolean; hidden?: boolean } = {}) {
+export function userPolicy(
+  opts: { admin?: boolean; hidden?: boolean; forKey?: boolean } = {}
+) {
   return {
     IsAdministrator: opts.admin ?? false,
     IsHidden: opts.hidden ?? false,
@@ -170,7 +192,8 @@ export function userPolicy(opts: { admin?: boolean; hidden?: boolean } = {}) {
       'Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider',
     PasswordResetProviderId:
       'Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider',
-    SyncPlayAccess: 'None',
+    // A key has no session to join a group with.
+    SyncPlayAccess: opts.forKey ? 'None' : 'CreateAndJoinGroups',
   };
 }
 
@@ -212,15 +235,9 @@ export function userDto(
     LastActivityDate: now,
     Configuration: userConfiguration(),
     Policy: opts.forKey
-      ? userPolicy({ admin: !persona, hidden: persona?.hidden })
+      ? userPolicy({ admin: !persona, hidden: persona?.hidden, forKey: true })
       : userPolicy(),
   };
-}
-
-function sessionId(client: ClientInfo, userId: string): string {
-  return createHash('md5')
-    .update(`${client.name}${client.deviceId}${userId}`)
-    .digest('hex');
 }
 
 export function sessionInfo(
@@ -243,13 +260,13 @@ export function sessionInfo(
     AdditionalUsers: [],
     Capabilities: {
       PlayableMediaTypes: ['Video'],
-      SupportedCommands: [],
+      SupportedCommands: [] as string[],
       SupportsMediaControl: false,
       SupportsPersistentIdentifier: false,
     },
     RemoteEndPoint: remoteIp ?? '',
     PlayableMediaTypes: ['Video'],
-    Id: sessionId(client, userId),
+    Id: sessionIdOf(client, userId),
     UserId: userId,
     UserName: persona?.name ?? accountName(userData),
     Client: client.name,
@@ -264,7 +281,7 @@ export function sessionInfo(
     NowPlayingQueue: [],
     HasCustomDeviceName: false,
     ServerId: instanceServerId(),
-    SupportedCommands: [],
+    SupportedCommands: [] as string[],
   };
 }
 
@@ -695,12 +712,38 @@ router.post(
 
 const SESSIONS_LIMIT = 50;
 
+/** The tracks of the version a session plays, while its memo lasts. */
+async function playingStreams(
+  ctx: JellyfinRequestContext,
+  row: WatchSessionRow
+): Promise<JellyfinMediaStream[] | undefined> {
+  if (!row.playSessionId || !row.mediaSourceId) return undefined;
+  const pointer = await resolveByPlaySession(row.playSessionId);
+  if (!pointer?.scope || pointer.uuid !== ctx.uuid) return undefined;
+  const memo = await resolveByItem(pointer.uuid, pointer.scope, pointer.itemId);
+  if (!memo) return undefined;
+  // The first version offered carries the item's id.
+  const record = pickSource(
+    memo,
+    row.mediaSourceId === memo.itemId ? undefined : row.mediaSourceId
+  );
+  return record
+    ? buildMediaStreams(record, {
+        subtitleFormat: (ext) =>
+          subtitleFormatFor(undefined, ctx.client.name, ext),
+        subtitleUrl: subtitleUrlFor(memo.itemId, record.msid),
+        playSessionId: memo.psid,
+      })
+    : undefined;
+}
+
 /** The caller's own session is the one this request is from, so it is active now. */
 export async function sessionFromRow(
   ctx: JellyfinRequestContext,
   row: WatchSessionRow,
   user: JellyfinPersona | null,
-  own: { remoteIp: string | undefined } | null
+  own: { remoteIp: string | undefined } | null,
+  opts: { streams?: boolean } = {}
 ) {
   const client: ClientInfo = own
     ? ctx.client
@@ -719,7 +762,12 @@ export async function sessionFromRow(
   );
   const checkIn = new Date(row.lastCheckinAt).toISOString();
   const playing = row.endedAt == null;
-  const item = playing ? await summaryItem(ctx, row) : null;
+  const [item, streams] = playing
+    ? await Promise.all([
+        summaryItem(ctx, row),
+        opts.streams ? playingStreams(ctx, row) : undefined,
+      ])
+    : [null, undefined];
   return {
     ...session,
     LastActivityDate: own ? session.LastActivityDate : checkIn,
@@ -730,12 +778,114 @@ export async function sessionFromRow(
             ...session.PlayState,
             PositionTicks: msToTicks(row.positionMs),
             IsPaused: row.paused,
+            ...(row.mediaSourceId ? { MediaSourceId: row.mediaSourceId } : {}),
+            ...(row.audioStreamIndex != null
+              ? { AudioStreamIndex: row.audioStreamIndex }
+              : {}),
+            ...(row.subtitleStreamIndex != null
+              ? { SubtitleStreamIndex: row.subtitleStreamIndex }
+              : {}),
           },
         }
       : {}),
-    ...(item ? { NowPlayingItem: item } : {}),
+    ...(item
+      ? { NowPlayingItem: streams ? { ...item, MediaStreams: streams } : item }
+      : {}),
   };
 }
+
+function withRemote<S extends ReturnType<typeof sessionInfo>>(
+  session: S,
+  device: RemoteDevice
+): S {
+  return {
+    ...session,
+    Id: sessionIdOf(device.client, device.userId),
+    Capabilities: {
+      ...session.Capabilities,
+      PlayableMediaTypes: device.media,
+      SupportedCommands: device.commands,
+      SupportsMediaControl: device.mediaControl,
+    },
+    PlayableMediaTypes: device.media,
+    SupportedCommands: device.commands,
+    SupportsMediaControl: device.mediaControl,
+    SupportsRemoteControl: true,
+  };
+}
+
+/** One read of each history for what the devices play. */
+async function deviceSessions(
+  ctx: JellyfinRequestContext,
+  devices: RemoteDevice[]
+) {
+  const found = devices.flatMap((device) => {
+    const user = device.persona
+      ? personaById(ctx.userData, device.persona)
+      : null;
+    if (device.persona && !user) return [];
+    const scope = watchScopeOf(ctx.uuid, user);
+    const key = sessionKeyFor(device.client);
+    return [{ device, user, scope, key, at: `${scope.persona}|${key}` }];
+  });
+  const scopes = new Map(found.map((f) => [f.scope.persona, f.scope]));
+  const rows = new Map<string, WatchSessionRow>();
+  await Promise.all(
+    [...scopes.values()].map(async (scope) => {
+      const keys = found
+        .filter((f) => f.scope.persona === scope.persona)
+        .map((f) => f.key);
+      for (const row of await WatchSessionRepository.getMany(scope, keys))
+        rows.set(`${scope.persona}|${row.sessionKey}`, row);
+    })
+  );
+  return Promise.all(
+    found.map(async ({ device, user, at }) => {
+      const row = rows.get(at);
+      return withRemote(
+        row && row.endedAt == null
+          ? await sessionFromRow(ctx, row, user, null, { streams: true })
+          : sessionInfo(ctx.uuid, ctx.userData, user, device.client, undefined),
+        device
+      );
+    })
+  );
+}
+
+const sameDevice = (
+  session: ReturnType<typeof sessionInfo>,
+  device: RemoteDevice
+) =>
+  session.Client === device.client.name &&
+  session.DeviceId.toLowerCase() === device.client.deviceId.toLowerCase();
+
+/** The sessions on devices that take remote control, with what they take. */
+export function withControls<S extends ReturnType<typeof sessionInfo>>(
+  sessions: S[],
+  devices: RemoteDevice[]
+): S[] {
+  return sessions.map((s) => {
+    const device = devices.find((d) => sameDevice(s, d));
+    return device ? withRemote(s, device) : s;
+  });
+}
+
+async function withDevices<S extends ReturnType<typeof sessionInfo>>(
+  ctx: JellyfinRequestContext,
+  sessions: S[],
+  devices: RemoteDevice[]
+) {
+  const listed = withControls(sessions, devices);
+  const idle = await deviceSessions(
+    ctx,
+    devices.filter((d) => !sessions.some((s) => sameDevice(s, d)))
+  );
+  return [...listed, ...idle];
+}
+
+/** Not res.json: this route is never revalidated, so its ETag hash is wasted. */
+const send = (res: Response, body: unknown) =>
+  res.type('json').end(JSON.stringify(body));
 
 /*
  * A non-administrator sees only their own sessions, so a user token gets the
@@ -744,16 +894,19 @@ export async function sessionFromRow(
 router.get(
   '/Sessions',
   jf(async (req, res, ctx) => {
-    // lists only sessions that take remote control, and none here do.
-    if (qs(req, 'ControllableByUserId')) {
-      res.json([]);
-      return;
-    }
     const within = Number(qs(req, 'ActiveWithinSeconds'));
     const since = within > 0 ? Date.now() - within * 1000 : 0;
     const deviceId = qs(req, 'DeviceId')?.toLowerCase();
     const onDevice = (id: string | null) =>
       !deviceId || id?.toLowerCase() === deviceId;
+    const devices = (await controllableDevices(ctx)).filter((d) =>
+      onDevice(d.client.deviceId)
+    );
+
+    if (qs(req, 'ControllableByUserId')) {
+      send(res, await deviceSessions(ctx, devices));
+      return;
+    }
 
     if (ctx.apiKey) {
       const rows = await WatchSessionRepository.listForUuid(
@@ -768,7 +921,7 @@ router.get(
         if (userKey && !user) continue;
         sessions.push(sessionFromRow(ctx, row, user, null));
       }
-      res.json(await Promise.all(sessions));
+      send(res, await withDevices(ctx, await Promise.all(sessions), devices));
       return;
     }
 
@@ -804,16 +957,11 @@ router.get(
       ...(own ? [own] : []),
       ...others.map((r) => sessionFromRow(ctx, r, ctx.persona, null)),
     ]);
-    res.json(sessions);
+    send(res, await withDevices(ctx, sessions, devices));
   })
 );
 router.post(
-  [
-    '/Sessions/Capabilities',
-    '/Sessions/Capabilities/Full',
-    '/Sessions/Viewing',
-    '/Sessions/Logout',
-  ],
+  ['/Sessions/Viewing', '/Sessions/Logout'],
   jfOptional(async (_req, res) => {
     res.status(204).end();
   })
