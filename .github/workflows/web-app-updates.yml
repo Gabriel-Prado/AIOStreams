@@ -79,7 +79,11 @@ jobs:
           } >message.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -C "$BRANCH"
+          if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            echo "::notice::Skipping $APP update because '$BRANCH' does not exist."
+            exit 0
+          fi
+          git switch -C "$BRANCH" "origin/$BRANCH"
           head -2 "$LOCK" >lock.tmp
           git rev-parse HEAD >>lock.tmp
           mv lock.tmp "$LOCK"
@@ -88,5 +92,6 @@ jobs:
           if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -q OPEN; then
             gh pr edit "$BRANCH" --title "$title" --body-file message.txt
           else
-            gh pr create --base main --head "$BRANCH" --title "$title" --body-file message.txt
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file message.txt || \
+              echo "::notice::Skipping PR creation for '$BRANCH' because this token cannot create pull requests."
           fi
