@@ -4,8 +4,11 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import {
   config as appConfig,
   createLogger,
+  extractAuth,
   getWatchStateProvider,
   itemIdForWatchRow,
+  sharedBackend,
+  SharedTx,
   userDataFromRow,
   type WatchScope,
 } from '@aiostreams/core';
@@ -55,16 +58,21 @@ async function mountUuid(
   return decodeURIComponent(first);
 }
 
-async function authenticateUpgrade(url: string): Promise<SocketUser | null> {
+async function authenticateUpgrade(
+  req: IncomingMessage
+): Promise<SocketUser | null> {
+  const url = req.url ?? '';
   const m = SOCKET_PATH.exec(url);
   if (!m) return null;
   const query = new URLSearchParams(url.split('?')[1] ?? '');
-  const apiKey =
-    query.get('api_key') ??
-    query.get('ApiKey') ??
-    query.get('apikey') ??
-    query.get('token') ??
-    '';
+  const { token } = extractAuth({
+    header: (name) => {
+      const value = req.headers[name];
+      return Array.isArray(value) ? value[0] : value;
+    },
+    query: Object.fromEntries(query),
+  });
+  const apiKey = token ?? query.get('token') ?? '';
   // Nothing here pushes sessions; a tool polls /Sessions once its socket fails.
   const user = apiKey ? await userForToken(apiKey) : null;
   if (!user) return null;
@@ -104,16 +112,41 @@ export function attachJellyfinWebSocket(server: HttpServer): void {
     return count;
   };
 
+  // Each replica hears every write and tells the sockets it holds.
+  const changes = sharedBackend().records<never>({
+    name: 'user-data',
+    save: () => null,
+    load: () => {
+      throw new Error('user data changes keep no records');
+    },
+    due: () => null,
+    tags: () => [],
+    receive: (_id, messages) => {
+      for (const { to, data } of messages) {
+        for (const key of to) {
+          const sockets = byScope.get(key);
+          if (!sockets?.size) continue;
+          const UserDataList = JSON.parse(data.toString()) as unknown[];
+          for (const [ws, userId] of sockets) {
+            send(ws, 'UserDataChanged', { UserId: userId, UserDataList });
+          }
+        }
+      }
+    },
+    lapse: () => undefined,
+  });
+  const replicated = !!appConfig.bootstrap.redisUri;
+
   getWatchStateProvider().onChange((scope, rows) => {
-    const sockets = byScope.get(scopeKey(scope));
-    if (!sockets?.size) return;
+    const key = scopeKey(scope);
+    if (!replicated && !byScope.get(key)?.size) return;
     const UserDataList = rows.map((row) => {
       const id = itemIdForWatchRow(row);
       return userDataFromRow(id, row, row.snapshot?.runtimeMs);
     });
-    for (const [ws, userId] of sockets) {
-      send(ws, 'UserDataChanged', { UserId: userId, UserDataList });
-    }
+    const tx = new SharedTx();
+    tx.send([key], Buffer.from(JSON.stringify(UserDataList)));
+    changes.broadcast(tx);
   });
 
   wss.on(
@@ -160,7 +193,7 @@ export function attachJellyfinWebSocket(server: HttpServer): void {
       reject(socket, 404, 'Not Found');
       return;
     }
-    void authenticateUpgrade(url)
+    void authenticateUpgrade(req)
       .then((user) => {
         if (socket.destroyed) return;
         if (!user) {

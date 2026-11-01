@@ -12,14 +12,13 @@ import {
   MPV_OUTLINE,
   MPV_SHADOW,
   mpvColor,
-  subtitleHeight,
   subtitleScale,
 } from '../../subtitles/style';
 import { parseChapters } from '../../playback/chapters';
 import type { Span } from '../../subtitles/align';
 import {
   ownTrackLabel,
-  type QueuedEpisode,
+  type QueuedItem,
   type Track,
 } from '../../playback/controller';
 import type {
@@ -188,7 +187,7 @@ function exoStatsText(
 /** How long a player in its own window waits for the next episode's page. */
 const LINGER_MS = 10_000;
 let linger: ReturnType<typeof setTimeout> | undefined;
-/** The episode a launched player moved on to by itself, which the next page takes over. */
+/** What a launched player moved on to by itself, which the next page takes over. */
 let advanced: { itemId: string; sourceId: string } | null = null;
 
 const SUBTITLE_TYPES = ['srt', 'vtt', 'ass', 'ssa', 'sub', 'sup'];
@@ -204,7 +203,7 @@ const SUBTITLE_MODES = {
   None: 'none',
 } as const;
 
-type PlayedFile = Pick<QueuedEpisode, 'url' | 'source' | 'startMs' | 'headers'>;
+type PlayedFile = Pick<QueuedItem, 'url' | 'source' | 'startMs' | 'headers'>;
 
 /** From the app's player itself, rather than the window or the app. */
 const fromPlayer = (m: ShellMessage) =>
@@ -231,7 +230,7 @@ export const appEngine: EngineFactory = (emit, { launched }) => {
   let tracks: AppTrack[] = [];
   /** Files the user added, by the name the player lists them under. */
   const added = new Map<string, string>();
-  let queued: QueuedEpisode | null = null;
+  let queued: QueuedItem | null = null;
   let moved = false;
   // Offered once per file.
   let retried = false;
@@ -367,11 +366,11 @@ export const appEngine: EngineFactory = (emit, { launched }) => {
               chapters: parseChapters(m.chapters),
             });
           case 'player-event':
-            // The next file it starts is the queued episode.
+            // The next file it starts is the queued one.
             if (m.name === 'start' && queued) {
               moved = true;
               advanced = { itemId: queued.itemId, sourceId: queued.source.Id! };
-              emit({ type: 'advanced', episode: queued });
+              emit({ type: 'advanced', next: queued });
             } else if (m.name === 'restart')
               report({ started: true, waiting: false });
             else if (m.name === 'loaded') emit({ type: 'loaded' });
@@ -457,27 +456,33 @@ export const appEngine: EngineFactory = (emit, { launched }) => {
     setSubtitle(id) {
       const server = file?.subtitles.find((s) => s.id === id);
       if (!server) return send('player-set', { subtitle: id });
+      // Fetched again on each pick: an addon may still be writing it.
       const loaded = tracks.find((t) => t.url === server.url);
-      if (loaded) send('player-set', { subtitle: loaded.id });
-      else
-        send('player-subtitle-add', {
-          url: server.url,
-          title: server.label,
-          language: server.lang ?? '',
-        });
+      send('player-subtitle-add', {
+        url: server.url,
+        title: server.label,
+        language: server.lang ?? '',
+        ...(loaded && { replace: Number(loaded.id) }),
+      });
     },
     setSubtitleDelay: (subtitleDelayMs) =>
       send('player-set', { subtitleDelayMs }),
-    skipAhead: external
-      ? undefined
-      : (skips) => send('player-skips', { segments: skips }),
+    skipAhead:
+      external || appBridge()?.platform !== 'android'
+        ? undefined
+        : (skips) => send('player-skips', { segments: skips }),
+    // The Android app draws the screen faster while they show.
+    showControls:
+      external || appBridge()?.platform !== 'android'
+        ? undefined
+        : (shown) => shell.send({ type: 'player-controls', shown }),
     // The user's own player keeps its own look.
-    setStyle({ subtitleStyle, fit, lift }) {
+    setStyle({ subtitleStyle, fit, height }) {
       if (external || !subtitleStyle) return;
       shell.send({
         type: 'player-style',
         fit,
-        subtitles: subtitleLook(subtitleStyle, lift),
+        subtitles: subtitleLook(subtitleStyle, height),
       });
     },
     toggleFullscreen: external
@@ -566,10 +571,11 @@ export const appEngine: EngineFactory = (emit, { launched }) => {
         }
       : undefined,
     queueNext: external
-      ? (episode) => {
-          if (queued) return;
-          queued = episode;
-          load(episode, true);
+      ? (next) => {
+          if (moved || (!next && !queued)) return;
+          queued = next;
+          if (next) load(next, true);
+          else send('player-unqueue');
         }
       : undefined,
   };
@@ -623,7 +629,7 @@ function failure(
 }
 
 /** The user's subtitle style in the units mpv and libass share. */
-function subtitleLook(style: SubtitleStyle, lift: number) {
+function subtitleLook(style: SubtitleStyle, height: number) {
   return {
     scale: subtitleScale(style),
     bold: style.bold,
@@ -635,7 +641,7 @@ function subtitleLook(style: SubtitleStyle, lift: number) {
     backColor: mpvColor(style.backgroundColor, style.backgroundOpacity),
     box: style.backgroundOpacity > 0,
     override: style.overrideStyled ? 'force' : 'scale',
-    position: 100 - subtitleHeight(style, lift),
+    position: 100 - height,
   };
 }
 

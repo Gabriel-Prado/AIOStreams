@@ -14,7 +14,7 @@ import type { JellyfinClient, Purpose } from './client';
 import { useSession } from './session';
 import { useFeature } from './server-info';
 import { settings, useSetting } from './settings';
-import { episodeMarks, ticksToMs, unavailableKind } from './format';
+import { episodeMarks, lacksDetails, ticksToMs, pickable } from './format';
 import { playerSupport } from './playback/player-choice';
 import type {
   BaseItemDto,
@@ -35,7 +35,10 @@ const PAGE = 60;
 /** Every key starts here, so a user switch or sign-out drops them all. */
 function useKey() {
   const { client, user } = useSession();
-  return ['jf', client.base, user.Id] as const;
+  return React.useMemo(
+    () => ['jf', client.base, user.Id] as const,
+    [client.base, user.Id]
+  );
 }
 
 /** Libraries of movies and shows; music, books, photos and the like are left out. */
@@ -443,7 +446,10 @@ function useItemOptions() {
   return (itemId: string) =>
     queryOptions({
       queryKey: [...key, 'item', itemId],
-      meta: { cache: 'titles' },
+      meta: {
+        cache: 'titles',
+        keep: (item) => !lacksDetails(item as BaseItemDto),
+      },
       // Dropped once nothing shows it, as the hero asks for each card it passes.
       queryFn: ({ signal }) => requestItem(client, user.Id!, itemId, signal),
     });
@@ -631,33 +637,42 @@ export async function requestPlaybackInfo(
 
 function usePlaybackInfoRequest() {
   const { client, user } = useSession();
-  return (
-    itemId: string,
-    opts: {
-      refresh?: boolean;
-      sourceId?: string;
-      kept?: boolean;
-      purpose?: Purpose;
-    } = {}
-  ) => requestPlaybackInfo(client, user.Id!, itemId, opts);
+  return React.useCallback(
+    (
+      itemId: string,
+      opts: {
+        refresh?: boolean;
+        sourceId?: string;
+        kept?: boolean;
+        purpose?: Purpose;
+      } = {}
+    ) => requestPlaybackInfo(client, user.Id!, itemId, opts),
+    [client, user.Id]
+  );
 }
 
 export function usePlaybackInfoOptions() {
   const request = usePlaybackInfoRequest();
   const key = useKey();
-  return (itemId: string, sourceId?: string, purpose?: Purpose) =>
-    queryOptions({
-      queryKey: [
-        ...key,
-        'playback-info',
-        itemId,
-        sourceId ?? null,
-        ...(purpose ? [purpose] : []),
-      ],
-      queryFn: () => request(itemId, { sourceId, purpose }),
-      staleTime: 10 * 60_000,
-    });
+  return React.useCallback(
+    (itemId: string, sourceId?: string, purpose?: Purpose) =>
+      queryOptions({
+        queryKey: [
+          ...key,
+          'playback-info',
+          itemId,
+          sourceId ?? null,
+          ...(purpose ? [purpose] : []),
+        ],
+        queryFn: () => request(itemId, { sourceId, purpose }),
+        staleTime: 10 * 60_000,
+      }),
+    [key, request]
+  );
 }
+
+/** About as long as the server reuses a list by default. */
+export const PRELOADED_MS = 3 * 60_000;
 
 /**
  * The version list asks on every open, as the server decides when a result is
@@ -668,6 +683,8 @@ export function usePlaybackInfo(
   itemId: string,
   opts: {
     listing?: boolean;
+    /** The list takes one asked for in the last `PRELOADED_MS`. */
+    preloaded?: boolean;
     kept?: boolean;
     sourceId?: string;
     enabled?: boolean;
@@ -682,7 +699,13 @@ export function usePlaybackInfo(
       queryFn: () => request(itemId, { kept: true }),
       staleTime: Infinity,
     }),
-    refetchOnMount: opts.listing ? 'always' : true,
+    refetchOnMount: opts.listing
+      ? (query) =>
+          opts.preloaded &&
+          Date.now() - query.state.dataUpdatedAt < PRELOADED_MS
+            ? false
+            : 'always'
+      : true,
     enabled: opts.enabled ?? true,
   });
 }
@@ -1089,13 +1112,21 @@ function isSkipped(
  * skips. A server that ignores `AdjacentTo` sends the whole show, so the
  * neighbours are found by position.
  */
-export function useAdjacentEpisodes(item: BaseItemDto) {
+export function useAdjacentEpisodes(item: BaseItemDto, enabled = true) {
   const { client, user } = useSession();
   const seriesId = item.Type === 'Episode' ? item.SeriesId : undefined;
   const skip = useSkippedMarks();
   const { fillers, recaps } = skip;
+  const [unaired] = useSetting(settings.next.markUnaired);
   return useQuery({
-    queryKey: [...useKey(), 'adjacent-episodes', item.Id, fillers, recaps],
+    queryKey: [
+      ...useKey(),
+      'adjacent-episodes',
+      item.Id,
+      fillers,
+      recaps,
+      unaired,
+    ],
     meta: { cache: 'titles' },
     queryFn: async () => {
       const skipped = (e: BaseItemDto) =>
@@ -1117,14 +1148,14 @@ export function useAdjacentEpisodes(item: BaseItemDto) {
           at >= 0 && i >= 0 && i < items.length;
           i += step
         ) {
-          if (unavailableKind(items[i])) return null;
+          if (!pickable(items[i])) return null;
           if (!skipped(items[i])) return items[i];
         }
         return null;
       };
       return { previous: along(-1), next: along(1) };
     },
-    enabled: !!seriesId,
+    enabled: enabled && !!seriesId,
     staleTime: 10 * 60_000,
   });
 }
@@ -1149,7 +1180,7 @@ export function useEpisodesAfter() {
     if (at < 0) return [];
     const after: BaseItemDto[] = [];
     for (const episode of Items.slice(at + 1)) {
-      if (unavailableKind(episode)) break;
+      if (!pickable(episode)) break;
       if (!isSkipped(episode, skip)) after.push(episode);
     }
     return after;

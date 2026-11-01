@@ -19,6 +19,10 @@ import { Button, IconButton } from '@aiostreams/ui/button';
 import { DropdownMenu, DropdownMenuItem } from '@aiostreams/ui/dropdown-menu';
 import { Drawer } from '@aiostreams/ui/drawer';
 import { Modal } from '@aiostreams/ui/modal';
+import {
+  ConfirmationDialog,
+  useConfirmationDialog,
+} from '@aiostreams/ui/shared/confirmation-dialog';
 import { useMediaQuery } from '@aiostreams/ui/hooks/media-query';
 import { Skeleton } from '@aiostreams/ui/skeleton';
 import { TextInput } from '@aiostreams/ui/text-input';
@@ -28,6 +32,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from '../lib/session';
 import { useFeature } from '../lib/server-info';
 import {
+  PRELOADED_MS,
   useItem,
   usePlaybackInfo,
   usePlaybackInfoOptions,
@@ -60,7 +65,15 @@ import {
   tabList,
   useRestoreFocus,
 } from '../lib/input';
-import { clock, itemSubtitle, itemTitle, ticksToMs } from '../lib/format';
+import {
+  airsLater,
+  clock,
+  dayLabel,
+  itemSubtitle,
+  itemTitle,
+  ticksToMs,
+  untilLabel,
+} from '../lib/format';
 import { cn } from '@aiostreams/ui/core/styling';
 import { backdropUrl, landscapeUrl } from '../lib/images';
 import { itemPath, navigate, to } from '../lib/paths';
@@ -79,11 +92,16 @@ interface Request {
   replace?: boolean;
   /** A pick downloads `items`, which start with `item`, or replaces `replace`'s version. */
   download?: { items: BaseItemDto[]; replace?: Download };
+  /** The playlist a pick plays on through. */
+  playlist?: string;
 }
 
 interface PickerValue {
   /** Lists the item's versions; nothing is resolved until this is called. */
-  open(item: BaseItemDto, opts?: { startMs?: number; playing?: string }): void;
+  open(
+    item: BaseItemDto,
+    opts?: { startMs?: number; playing?: string; playlist?: string }
+  ): void;
   /**
    * What Play does (see `useStraightPlay`); a hold does the other. A `version`
    * plays straight, in place of the one remembered.
@@ -95,6 +113,7 @@ interface PickerValue {
       held?: boolean;
       version?: string;
       replace?: boolean;
+      playlist?: string;
     }
   ): void;
   /**
@@ -102,6 +121,12 @@ interface PickerValue {
    * `replace` gives that download another version.
    */
   download(items: BaseItemDto[], opts?: { replace?: Download }): void;
+  /** Runs `go`, asking first about an episode that hasn't aired yet. */
+  askIfUnaired(
+    items: BaseItemDto[],
+    go: () => void,
+    action?: Unaired['action']
+  ): void;
 }
 
 const PickerContext = React.createContext<PickerValue | null>(null);
@@ -121,7 +146,13 @@ export function useStraightPlay(): (
 }
 
 /** Opens the picker once, then drops `pick` from the address. */
-export function PickOnArrival({ itemId }: { itemId: string }) {
+export function PickOnArrival({
+  itemId,
+  playlist,
+}: {
+  itemId: string;
+  playlist?: string;
+}) {
   const item = useItem(itemId);
   const picker = useVersionPicker();
   const opened = React.useRef(false);
@@ -130,10 +161,28 @@ export function PickOnArrival({ itemId }: { itemId: string }) {
     opened.current = true;
     picker.open(item.data, {
       startMs: ticksToMs(item.data.UserData?.PlaybackPositionTicks),
+      playlist,
     });
     navigate(itemPath(item.data), { replace: true });
-  }, [item.data, picker]);
+  }, [item.data, picker, playlist]);
   return null;
+}
+
+/** With the setting on, asks for the item's versions before Play does. */
+export function usePreloadVersions(item: BaseItemDto | undefined) {
+  const [preload] = useSetting(settings.playback.preloadVersions);
+  const queryClient = useQueryClient();
+  const infoOptions = usePlaybackInfoOptions();
+  const downloaded = useFindDownloaded();
+  const id = item?.Id;
+  const local = !!item && !!downloaded(item);
+  React.useEffect(() => {
+    if (preload && id && !local)
+      void queryClient.prefetchQuery({
+        ...infoOptions(id),
+        staleTime: PRELOADED_MS,
+      });
+  }, [preload, id, local, queryClient, infoOptions]);
 }
 
 export function useVersionPicker(): PickerValue {
@@ -149,6 +198,7 @@ export function VersionPickerProvider({
 }) {
   const [request, setRequest] = React.useState<Request | null>(null);
   const [external, setExternal] = React.useState<BaseItemDto | null>(null);
+  const [unaired, setUnaired] = React.useState<Unaired | null>(null);
   const straight = useStraightPlay();
   const queryClient = useQueryClient();
   const infoOptions = usePlaybackInfoOptions();
@@ -180,10 +230,10 @@ export function VersionPickerProvider({
     const playStraight = async (
       item: BaseItemDto,
       startMs: number,
-      opts: { version?: string; replace?: boolean } = {}
+      opts: { version?: string; replace?: boolean; playlist?: string } = {}
     ) => {
       const { queryClient, infoOptions, playVersion } = latest.current;
-      const { replace } = opts;
+      const { replace, playlist } = opts;
       const last = opts.version ?? rememberedVersion(item, startMs);
       // The player page finds the version itself, and lists them if it is gone.
       if (
@@ -191,7 +241,9 @@ export function VersionPickerProvider({
         chosenPlayer().kind !== 'link' &&
         party.state()?.status !== 'live'
       ) {
-        navigate(to.play(item.Id!, last ?? '', startMs), { replace });
+        navigate(to.play(item.Id!, last ?? '', startMs, playlist), {
+          replace,
+        });
         return;
       }
       const notice = toast.loading(t`Finding a version…`);
@@ -199,31 +251,46 @@ export function VersionPickerProvider({
         const info = await queryClient.fetchQuery(infoOptions(item.Id!));
         const sources = playableSources(info);
         const source = sources.find((s) => s.Id === last) ?? sources[0];
-        if (!source) setRequest({ item, startMs, replace });
+        if (!source) setRequest({ item, startMs, replace, playlist });
         else
           await playVersion(item, {
             source,
             startMs,
             replace,
+            playlist,
             onExternal: () => setExternal(item),
           });
       } catch {
-        setRequest({ item, startMs, replace });
+        setRequest({ item, startMs, replace, playlist });
       } finally {
         setTimeout(() => toast.dismiss(notice));
       }
     };
+    const askIfUnaired = (
+      items: BaseItemDto[],
+      go: () => void,
+      action: Unaired['action'] = 'play'
+    ) => {
+      const item = items.find(airsLater);
+      if (item) setUnaired({ item, go, action });
+      else go();
+    };
     return {
+      askIfUnaired,
       open: (item, opts) =>
-        setRequest({
-          item,
-          startMs: opts?.startMs ?? 0,
-          playing: opts?.playing,
-        }),
+        askIfUnaired(opts?.playing ? [] : [item], () =>
+          setRequest({
+            item,
+            startMs: opts?.startMs ?? 0,
+            playing: opts?.playing,
+            playlist: opts?.playlist,
+          })
+        ),
       play: (item, opts) => {
         const startMs = opts?.startMs ?? 0;
         const version = opts?.version;
         const replace = opts?.replace;
+        const playlist = opts?.playlist;
         // Holding still lists the versions.
         const local = !opts?.held && latest.current.downloaded(item);
         if (
@@ -231,24 +298,37 @@ export function VersionPickerProvider({
           chosenPlayer().kind !== 'link' &&
           (!version || version === local.source!.Id)
         ) {
-          navigate(to.play(item.Id!, local.source!.Id!, startMs), { replace });
+          navigate(to.play(item.Id!, local.source!.Id!, startMs, playlist), {
+            replace,
+          });
           return;
         }
-        if (version || latest.current.straight(item, startMs) !== !!opts?.held)
-          void playStraight(item, startMs, { version, replace });
-        else setRequest({ item, startMs, replace });
+        askIfUnaired([item], () => {
+          if (
+            version ||
+            latest.current.straight(item, startMs) !== !!opts?.held
+          )
+            void playStraight(item, startMs, { version, replace, playlist });
+          else setRequest({ item, startMs, replace, playlist });
+        });
       },
       download: (items, opts) => {
         if (!items.length || !downloadsHost()) return;
-        // As Play does, the setting skips the list and takes the first version.
-        if (latest.current.autoPick && !opts?.replace)
-          void latest.current.addDownloads(items);
-        else
-          setRequest({
-            item: items[0],
-            startMs: 0,
-            download: { items, replace: opts?.replace },
-          });
+        askIfUnaired(
+          opts?.replace ? [] : items,
+          () => {
+            // As Play does, the setting skips the list and takes the first version.
+            if (latest.current.autoPick && !opts?.replace)
+              void latest.current.addDownloads(items);
+            else
+              setRequest({
+                item: items[0],
+                startMs: 0,
+                download: { items, replace: opts?.replace },
+              });
+          },
+          'download'
+        );
       },
     };
   }, []);
@@ -316,7 +396,49 @@ export function VersionPickerProvider({
         </Modal>
       )}
       <ExternalPrompt item={external} onClose={() => setExternal(null)} />
+      <UnairedQuestion asking={unaired} onClose={() => setUnaired(null)} />
     </PickerContext.Provider>
+  );
+}
+
+interface Unaired {
+  item: BaseItemDto;
+  go: () => void;
+  action: 'play' | 'download';
+}
+
+function UnairedQuestion({
+  asking,
+  onClose,
+}: {
+  asking: Unaired | null;
+  onClose: () => void;
+}) {
+  const item = asking?.item;
+  const date = item?.PremiereDate;
+  const name = item?.Name ?? '';
+  const day = date ? dayLabel(date) : '';
+  const until = date ? untilLabel(date) : '';
+  const restoreFocus = useRestoreFocus(!!asking);
+  const question = useConfirmationDialog({
+    title: t`Not aired yet`,
+    description:
+      asking?.action === 'download'
+        ? t`${name} airs ${day} (${until}). Download it anyway?`
+        : t`${name} airs ${day} (${until}). Play it anyway?`,
+    actionText:
+      asking?.action === 'download' ? t`Download anyway` : t`Play anyway`,
+    // Once this dialog has handed focus back, so the next one keeps it.
+    onConfirm: () => asking && setTimeout(asking.go),
+  });
+  return (
+    <ConfirmationDialog
+      {...question}
+      name="unaired"
+      onCloseAutoFocus={restoreFocus}
+      isOpen={!!asking}
+      close={onClose}
+    />
   );
 }
 
@@ -346,9 +468,12 @@ function Versions({
   const { client } = useSession();
   const { item } = request;
   const purpose = request.download ? 'download' : undefined;
+  const [preloaded] = useSetting(settings.playback.preloadVersions);
   const info = usePlaybackInfo(
     item.Id!,
-    request.playing ? { kept: true } : { listing: true, purpose }
+    request.playing
+      ? { kept: true }
+      : { listing: true, preloaded: preloaded && !purpose, purpose }
   );
   const refresh = useRefreshPlaybackInfo(item.Id!, purpose);
   const refreshing = info.isFetching || refresh.isPending;
@@ -479,6 +604,7 @@ function Versions({
       source,
       startMs,
       replace: !!request.playing || !!request.replace,
+      playlist: request.playlist,
       onExternal,
     }).catch((e: Error) => toast.error(e.message));
   };

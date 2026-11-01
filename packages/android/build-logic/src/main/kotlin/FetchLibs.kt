@@ -13,7 +13,7 @@ import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 
-/** Downloads the libmpv AAR `libs.pin` names, checks its SHA-256, and unpacks what the module builds with. */
+/** Downloads the libs AAR `libs.pin` names, checks its SHA-256, and unpacks what the module builds with. */
 abstract class FetchLibs : DefaultTask() {
     @get:InputFile
     @get:PathSensitive(PathSensitivity.NONE)
@@ -25,6 +25,9 @@ abstract class FetchLibs : DefaultTask() {
     @get:OutputDirectory
     abstract val assets: DirectoryProperty
 
+    @get:OutputDirectory
+    abstract val res: DirectoryProperty
+
     @get:OutputFile
     abstract val classes: RegularFileProperty
 
@@ -35,7 +38,7 @@ abstract class FetchLibs : DefaultTask() {
             .associate { it.substringBefore('=') to it.substringAfter('=') }
         val url = values.getValue("url")
         val expected = values.getValue("sha256")
-        val aar = File(temporaryDir, "libmpv.aar")
+        val aar = File(temporaryDir, "libs.aar")
         val digest = MessageDigest.getInstance("SHA-256")
         DigestInputStream(URI(url).toURL().openStream(), digest).use { input ->
             aar.outputStream().use { input.copyTo(it) }
@@ -43,12 +46,13 @@ abstract class FetchLibs : DefaultTask() {
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
         check(actual == expected) { "$url hashes to $actual, not the pinned $expected" }
 
-        for (dir in listOf(jniLibs, assets)) dir.get().asFile.run { deleteRecursively(); mkdirs() }
+        for (dir in listOf(jniLibs, assets, res)) dir.get().asFile.run { deleteRecursively(); mkdirs() }
         ZipFile(aar).use { zip ->
             for (entry in zip.entries()) {
                 val target = when {
                     entry.isDirectory -> continue
                     entry.name.startsWith("jni/") -> jniLibs.file(entry.name.removePrefix("jni/"))
+                    entry.name == "assets/subfont.ttf" -> res.file("raw/subfont.ttf")
                     entry.name.startsWith("assets/") -> assets.file(entry.name.removePrefix("assets/"))
                     entry.name == "classes.jar" -> classes
                     else -> continue

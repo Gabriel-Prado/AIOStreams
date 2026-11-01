@@ -1,6 +1,7 @@
 package io.github.viren070.aiostreams
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.ContentValues
@@ -14,8 +15,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.storage.StorageManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.text.format.Formatter
 import android.util.Log
 import android.hardware.input.InputManager
 import android.view.InputDevice
@@ -61,7 +64,7 @@ import kotlinx.serialization.json.put
 
 /** The video beneath, the page over it, and the bridge between them. */
 class MainActivity : ComponentActivity() {
-    private lateinit var web: CompletingWebView
+    private lateinit var web: AppWebView
     private lateinit var bridge: AppBridge
     private lateinit var playback: Playback
     private lateinit var player: PlayerChannel
@@ -121,7 +124,7 @@ class MainActivity : ComponentActivity() {
             })
         }
         // Edge to edge: the page keeps clear of the system bars with its own safe-area insets.
-        web = CompletingWebView(this, onTv())
+        web = AppWebView(this, onTv())
         setContentView(FrameLayout(this).apply {
             addView(playback.stage, MATCH_PARENT, MATCH_PARENT)
             addView(web, MATCH_PARENT, MATCH_PARENT)
@@ -233,6 +236,10 @@ class MainActivity : ComponentActivity() {
             }
             "player-engine" -> message["name"]?.jsonPrimitive?.contentOrNull?.let { playback.choose(it, player) }
             "player-retry" -> message["name"]?.jsonPrimitive?.contentOrNull?.let { playback.retry(it, player) }
+            // A TV would blank to switch modes.
+            "player-controls" -> if (!onTv()) {
+                message["shown"]?.jsonPrimitive?.booleanOrNull?.let { runOnUiThread { frameRates.controls(it) } }
+            }
             "player-settings" -> {
                 player.setSettings(PlayerProtocol.settings(message))
                 message["frameRate"]?.jsonPrimitive?.booleanOrNull?.let { frameRates.enabled = it }
@@ -254,6 +261,7 @@ class MainActivity : ComponentActivity() {
             "watch-next" -> watchNext.publish((message["items"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty())
             "voice-search" -> voice.listen()
             "voice-cancel" -> voice.cancel()
+            "download-folder" -> runOnUiThread(::chooseDownloadFolder)
             "save-file" -> saveFile(
                 message["name"]?.jsonPrimitive?.contentOrNull ?: "aiostreams.txt",
                 message["mime"]?.jsonPrimitive?.contentOrNull ?: "text/plain",
@@ -279,6 +287,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }.start()
             }
+            "licenses" -> Thread {
+                val answer = Licenses.answer(this)
+                runOnUiThread { bridge.send(answer) }
+            }.start()
             "crash-report" -> Thread {
                 val report = runCatching { Crashes.last(this) }.getOrNull()
                 runOnUiThread {
@@ -334,6 +346,27 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this, note, Toast.LENGTH_LONG).show()
             }
         }.start()
+    }
+
+    private fun chooseDownloadFolder() {
+        val folders = Downloads.folders(this)
+        if (folders.isEmpty()) return
+        val storage = getSystemService(StorageManager::class.java)
+        val labels = folders.map { folder ->
+            getString(
+                R.string.download_folder_free,
+                storage.getStorageVolume(folder)?.getDescription(this) ?: folder.path,
+                Formatter.formatShortFileSize(this, folder.usableSpace),
+            )
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.download_folder_title)
+            .setSingleChoiceItems(labels.toTypedArray(), folders.indexOf(Downloads.folder(this))) { dialog, which ->
+                Downloads.setFolder(this, folders[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun onPlayerChanged() {

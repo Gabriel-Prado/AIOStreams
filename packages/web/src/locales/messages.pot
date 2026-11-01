@@ -30,8 +30,12 @@ msgstr ""
 msgid "{count, plural, one {# minute} other {# minutes}}"
 msgstr ""
 
-#: src/pages/settings/playback.tsx
+#: src/pages/settings/common.tsx
 msgid "{count, plural, one {# second} other {# seconds}}"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "{count, plural, one {# title} other {# titles}}"
 msgstr ""
 
 #: src/components/party/party-sheet.tsx
@@ -64,6 +68,7 @@ msgstr ""
 
 #: src/pages/downloads.tsx
 #: src/pages/history.tsx
+#: src/pages/item.tsx
 msgid "{episodeCount, plural, one {# episode} other {# episodes}}"
 msgstr ""
 
@@ -117,6 +122,8 @@ msgstr ""
 msgid "{key} is taken by {taken}"
 msgstr ""
 
+#: src/components/card-preview.tsx
+#: src/components/episodes.tsx
 #: src/pages/downloads.tsx
 msgid "{left} left"
 msgstr ""
@@ -144,6 +151,14 @@ msgstr ""
 
 #: src/pages/settings/playback.tsx
 msgid "{n, plural, one {After # episode} other {After # episodes}}"
+msgstr ""
+
+#: src/components/version-picker.tsx
+msgid "{name} airs {day} ({until}). Download it anyway?"
+msgstr ""
+
+#: src/components/version-picker.tsx
+msgid "{name} airs {day} ({until}). Play it anyway?"
 msgstr ""
 
 #: src/components/party/party-host.tsx
@@ -222,6 +237,10 @@ msgstr ""
 msgid "{total, plural, one {# title} other {# titles}}"
 msgstr ""
 
+#: src/pages/item.tsx
+msgid "{unairedCount, plural, one {# unaired} other {# unaired}}"
+msgstr ""
+
 #: src/components/player/options.tsx
 msgid "{unread, plural, one {Watch party, # new message} other {Watch party, # new messages}}"
 msgstr ""
@@ -297,6 +316,10 @@ msgstr ""
 
 #: src/components/version-settings.tsx
 msgid "A badge shows on each version whose text matches its pattern: the name and description your formatter writes, the file name, and the tags read from it."
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "A card you rest on grows into a bigger preview with its details, while the hero rotates."
 msgstr ""
 
 #: src/components/party/party-sheet.tsx
@@ -410,8 +433,27 @@ msgstr ""
 msgid "Add favourite"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Add from Continue watching"
+msgstr ""
+
+#: src/components/item-menu.tsx
+#: src/components/playlists.tsx
+#: src/pages/item.tsx
+msgid "Add to playlist"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Add to this playlist"
+msgstr ""
+
 #: src/components/player/controls.tsx
 msgid "Added {name}"
+msgstr ""
+
+#: src/components/playlists.tsx
+#: src/pages/player.tsx
+msgid "Added to {name}"
 msgstr ""
 
 #: src/pages/settings/account.tsx
@@ -434,12 +476,8 @@ msgstr ""
 msgid "Airs"
 msgstr ""
 
-#: src/components/episodes.tsx
+#: src/lib/format.ts
 msgid "Airs {day} · {until}"
-msgstr ""
-
-#: src/components/episodes.tsx
-msgid "Airs {until}"
 msgstr ""
 
 #: src/components/kind-tabs.tsx
@@ -457,8 +495,16 @@ msgstr ""
 msgid "All fields"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "All playlists"
+msgstr ""
+
 #: src/lib/downloads/index.ts
 msgid "Already downloaded or on the way"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Already in {name}"
 msgstr ""
 
 #: src/components/send-report.tsx
@@ -484,7 +530,7 @@ msgid "Always shows subtitles, in your language when the version has them."
 msgstr ""
 
 #: src/pages/settings/audio.tsx
-msgid "An audio track you pick while watching a show sets the language for its other episodes. Picking the one your languages would play forgets it."
+msgid "An audio track you pick while watching a show sets the language for its other episodes. Picking what the settings above would play forgets it."
 msgstr ""
 
 #: src/lib/hosts/jellyfin-android.ts
@@ -599,6 +645,7 @@ msgid "Automatic lists episodes on narrow screens and puts them in a row on wide
 msgstr ""
 
 #: src/components/layout.tsx
+#: src/components/licenses.tsx
 #: src/components/party/party-sheet.tsx
 #: src/components/player/controls.tsx
 #: src/components/player/next-episode.tsx
@@ -702,10 +749,6 @@ msgstr ""
 msgid "Browsing"
 msgstr ""
 
-#: src/pages/settings/about.tsx
-msgid "Builds the mpv library this app ships with."
-msgstr ""
-
 #: src/lib/playback/player-choice.ts
 msgid "Built-in mpv"
 msgstr ""
@@ -748,11 +791,16 @@ msgstr ""
 msgid "Can’t reach the server"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/components/send-report.tsx
 #: src/components/version-settings.tsx
 #: src/lib/i18n.ts
 #: src/pages/downloads.tsx
 msgid "Cancel"
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "Cards"
 msgstr ""
 
 #: src/components/people.tsx
@@ -805,11 +853,12 @@ msgstr ""
 msgid "Channels"
 msgstr ""
 
+#: src/components/player/chapters.tsx
 #: src/components/player/keys.ts
-#: src/components/player/options.tsx
 msgid "Chapter {number}"
 msgstr ""
 
+#: src/components/player/chapters.tsx
 #: src/components/player/options.tsx
 msgid "Chapters"
 msgstr ""
@@ -915,6 +964,7 @@ msgid "Configuration password"
 msgstr ""
 
 #: src/components/no-catalogs.tsx
+#: src/components/no-details.tsx
 msgid "Configure"
 msgstr ""
 
@@ -979,6 +1029,11 @@ msgstr ""
 msgid "Corner button"
 msgstr ""
 
+#: src/components/playlists.tsx
+#: src/pages/player.tsx
+msgid "Could not add to {name}"
+msgstr ""
+
 #: src/lib/hosts/shell/index.ts
 msgid "Could not check: {error}"
 msgstr ""
@@ -1013,6 +1068,10 @@ msgstr ""
 msgid "Could not find versions of that episode"
 msgstr ""
 
+#: src/components/player/next-episode.tsx
+msgid "Could not find versions of that title"
+msgstr ""
+
 #: src/lib/downloads/index.ts
 msgid "Could not find versions: {message}"
 msgstr ""
@@ -1038,6 +1097,10 @@ msgstr ""
 msgid "Could not load the history"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Could not load the playlists."
+msgstr ""
+
 #: src/components/version-picker.tsx
 msgid "Could not load the versions: {loadError}"
 msgstr ""
@@ -1052,6 +1115,10 @@ msgstr ""
 
 #: src/pages/person.tsx
 msgid "Could not load this person"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Could not load this playlist."
 msgstr ""
 
 #: src/pages/item.tsx
@@ -1106,12 +1173,20 @@ msgstr ""
 msgid "Counts down, then plays the next episode. Off, the prompt waits for you."
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Create"
+msgstr ""
+
 #: src/components/people.tsx
 msgid "Creator"
 msgstr ""
 
-#: src/pages/settings/about.tsx
 #: src/pages/settings/playback.tsx
+msgid "Credits"
+msgstr ""
+
+#: src/pages/settings/about.tsx
+msgctxt "Projects the app is built on"
 msgid "Credits"
 msgstr ""
 
@@ -1195,12 +1270,21 @@ msgstr ""
 msgid "Delay: {delayLabel}"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/pages/downloads.tsx
 msgid "Delete"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Delete {name}"
+msgstr ""
+
 #: src/pages/downloads.tsx
 msgid "Delete all"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Delete playlist"
 msgstr ""
 
 #: src/pages/settings/theme.tsx
@@ -1310,6 +1394,7 @@ msgstr ""
 
 #: src/components/party/reaction-setting.tsx
 #: src/components/player/subtitle-sync.tsx
+#: src/components/playlists.tsx
 #: src/components/send-report.tsx
 #: src/components/version-settings.tsx
 msgid "Done"
@@ -1322,8 +1407,13 @@ msgstr ""
 #: src/components/download-button.tsx
 #: src/components/item-menu.tsx
 #: src/components/version-picker.tsx
+#: src/pages/item.tsx
 #: src/pages/settings/about.tsx
 msgid "Download"
+msgstr ""
+
+#: src/components/version-picker.tsx
+msgid "Download anyway"
 msgstr ""
 
 #: src/components/download-button.tsx
@@ -1372,6 +1462,10 @@ msgstr ""
 
 #: src/lib/i18n.ts
 msgid "Drawer"
+msgstr ""
+
+#: src/pages/item.tsx
+msgid "Drop"
 msgstr ""
 
 #: src/pages/item.tsx
@@ -1428,6 +1522,7 @@ msgid "Enter your password."
 msgstr ""
 
 #: src/components/episodes.tsx
+#: src/components/player/pause-screen.tsx
 msgid "Episode {number}"
 msgstr ""
 
@@ -1448,6 +1543,10 @@ msgstr ""
 
 #: src/pages/settings/playback.tsx
 msgid "Episodes end without offering the next one."
+msgstr ""
+
+#: src/pages/settings/playback.tsx
+msgid "Episodes that haven't aired yet show as unaired, ask before playing, and are passed over when playing on or downloading a season. Turn off if their air dates are often wrong."
 msgstr ""
 
 #: src/lib/input/keys.ts
@@ -1508,6 +1607,10 @@ msgstr ""
 msgid "Faster"
 msgstr ""
 
+#: src/pages/item.tsx
+msgid "Favourite"
+msgstr ""
+
 #: src/components/layout.tsx
 #: src/pages/favourites.tsx
 #: src/pages/settings/apps.tsx
@@ -1536,6 +1639,10 @@ msgstr ""
 
 #: src/components/version-picker.tsx
 msgid "Filter versions"
+msgstr ""
+
+#: src/pages/settings/playback.tsx
+msgid "Find versions when a title opens"
 msgstr ""
 
 #: src/components/download-button.tsx
@@ -1752,6 +1859,10 @@ msgstr ""
 msgid "How large cards are in a grid."
 msgstr ""
 
+#: src/pages/settings/interface.tsx
+msgid "How long the hero stays on a featured title while it rotates."
+msgstr ""
+
 #: src/pages/settings/playback.tsx
 msgid "How much of the video the player holds in memory: ahead, to ride out a slow connection, and behind, to seek back at once. Automatic sizes it from this device's memory."
 msgstr ""
@@ -1814,6 +1925,10 @@ msgstr ""
 msgid "Install"
 msgstr ""
 
+#: src/components/no-details.tsx
+msgid "Install a metadata addon from Addons → Marketplace. For one that isn't listed, use the Custom addon there."
+msgstr ""
+
 #: src/components/no-catalogs.tsx
 msgid "Install catalog addons from Addons → Marketplace. For one that isn't listed, use the Custom addon there."
 msgstr ""
@@ -1838,6 +1953,10 @@ msgstr ""
 msgid "Invite link copied"
 msgstr ""
 
+#: src/components/licenses.tsx
+msgid "It came with no licence text."
+msgstr ""
+
 #: src/components/send-report.tsx
 msgid "It carries this device's details and the app's recent log. Passwords and tokens are left out."
 msgstr ""
@@ -1848,6 +1967,10 @@ msgstr ""
 
 #: src/pages/settings/theme.tsx
 msgid "It will be undone unless you keep it."
+msgstr ""
+
+#: src/pages/settings/about.tsx
+msgid "Its Metal and AVFoundation video outputs."
 msgstr ""
 
 #: src/pages/settings/about.tsx
@@ -1995,6 +2118,10 @@ msgstr ""
 msgid "Lets the TV's decoder keep picture and sound in step itself, which plays 4K and HDR more smoothly on some TVs. Turn it off if video stutters or stays black."
 msgstr ""
 
+#: src/components/licenses.tsx
+msgid "Licences"
+msgstr ""
+
 #: src/components/version-settings.tsx
 msgid "Link a pack someone shares, in this app's format or the one Fusion and Nuvio use. It stays up to date with its author's changes."
 msgstr ""
@@ -2035,6 +2162,10 @@ msgstr ""
 msgid "Looking for the party…"
 msgstr ""
 
+#: src/pages/settings/playback.tsx
+msgid "Looks for versions as soon as a title's page opens, so Play and the version list don't wait. Each title you open is looked up, even if you don't play it."
+msgstr ""
+
 #: src/components/party/party-sheet.tsx
 msgid "Lost the connection to {relay}. Reconnecting… Your player carries on, and gets back in step once it's back."
 msgstr ""
@@ -2060,14 +2191,16 @@ msgstr ""
 msgid "Mark as watched"
 msgstr ""
 
-#: src/components/episodes.tsx
+#: src/pages/settings/playback.tsx
+msgid "Mark unaired episodes"
+msgstr ""
+
 #: src/components/item-menu.tsx
 #: src/pages/history.tsx
 #: src/pages/item.tsx
 msgid "Mark unwatched"
 msgstr ""
 
-#: src/components/episodes.tsx
 #: src/components/item-menu.tsx
 #: src/pages/item.tsx
 msgid "Mark watched"
@@ -2129,9 +2262,12 @@ msgstr ""
 msgid "Monospace"
 msgstr ""
 
+#: src/components/episodes.tsx
 #: src/components/overview.tsx
+#: src/components/playlists.tsx
 #: src/components/version-picker.tsx
 #: src/pages/downloads.tsx
+#: src/pages/item.tsx
 msgid "More"
 msgstr ""
 
@@ -2163,10 +2299,12 @@ msgstr ""
 msgid "Move {name} up"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/components/version-settings.tsx
 msgid "Move down"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/components/version-settings.tsx
 msgid "Move up"
 msgstr ""
@@ -2217,6 +2355,7 @@ msgstr ""
 msgid "Mute key"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/components/version-settings.tsx
 msgid "Name"
 msgstr ""
@@ -2241,6 +2380,11 @@ msgstr ""
 msgid "New code"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "New playlist"
+msgstr ""
+
+#: src/components/player/controls.tsx
 #: src/components/remote-sheet.tsx
 #: src/lib/i18n.ts
 msgid "Next"
@@ -2263,6 +2407,10 @@ msgstr ""
 
 #: src/pages/settings/index.tsx
 msgid "Next episode, controls and players"
+msgstr ""
+
+#: src/components/player/next-episode.tsx
+msgid "Next in {playlistName}"
 msgstr ""
 
 #: src/pages/calendar.tsx
@@ -2308,6 +2456,10 @@ msgstr ""
 msgid "No catalogs yet"
 msgstr ""
 
+#: src/components/no-details.tsx
+msgid "No details for this title"
+msgstr ""
+
 #: src/components/download-button.tsx
 msgid "No episodes to download there"
 msgstr ""
@@ -2334,6 +2486,10 @@ msgstr ""
 
 #: src/lib/playback/play.ts
 msgid "No playable version was found"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "No playlists yet. Make one here, or add a title to one from its menu."
 msgstr ""
 
 #: src/lib/servers.ts
@@ -2365,6 +2521,10 @@ msgstr ""
 msgid "None"
 msgstr ""
 
+#: src/components/no-details.tsx
+msgid "None of your addons has details for {id}. Add a metadata addon to your configuration, then refresh."
+msgstr ""
+
 #: src/components/player/keys.ts
 #: src/lib/subtitles/style.ts
 #: src/pages/settings/subtitles.tsx
@@ -2374,6 +2534,10 @@ msgstr ""
 #: src/components/player/keys.ts
 #: src/lib/input/actions.ts
 msgid "Normal speed"
+msgstr ""
+
+#: src/components/version-picker.tsx
+msgid "Not aired yet"
 msgstr ""
 
 #: src/lib/hosts/shell/index.ts
@@ -2416,6 +2580,10 @@ msgstr ""
 msgid "Nothing found."
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Nothing here yet. Add titles from their menu, or from the suggestions below."
+msgstr ""
+
 #: src/pages/discover.tsx
 #: src/pages/item.tsx
 msgid "Nothing here."
@@ -2430,6 +2598,7 @@ msgstr ""
 msgid "Nothing marked as a favourite yet."
 msgstr ""
 
+#: src/components/licenses.tsx
 #: src/components/version-settings.tsx
 #: src/pages/discover.tsx
 #: src/pages/settings/audio.tsx
@@ -2561,7 +2730,6 @@ msgstr ""
 msgid "Opacity: {backgroundOpacity}%"
 msgstr ""
 
-#: src/components/hero.tsx
 #: src/components/item-menu.tsx
 #: src/components/random-pick.tsx
 #: src/pages/history.tsx
@@ -2586,6 +2754,10 @@ msgstr ""
 
 #: src/lib/i18n.ts
 msgid "Open main menu"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Open playlist"
 msgstr ""
 
 #: src/pages/downloads.tsx
@@ -2777,6 +2949,10 @@ msgstr ""
 msgid "Pauses and asks before the next episode once this many have played in a row without a key, click or button press."
 msgstr ""
 
+#: src/pages/settings/playback.tsx
+msgid "Pausing, playing or skipping with a remote or the keyboard brings the controls up, for a moment after a skip. Turned off, only a brief icon shows."
+msgstr ""
+
 #: src/pages/search.tsx
 msgid "People"
 msgstr ""
@@ -2847,7 +3023,9 @@ msgstr ""
 
 #: src/components/hero.tsx
 #: src/components/item-menu.tsx
+#: src/components/no-details.tsx
 #: src/components/player/controls.tsx
+#: src/components/playlists.tsx
 #: src/components/random-pick.tsx
 #: src/components/remote-sheet.tsx
 #: src/lib/input/actions.ts
@@ -2858,6 +3036,10 @@ msgstr ""
 
 #: src/pages/item.tsx
 msgid "Play {code}"
+msgstr ""
+
+#: src/components/version-picker.tsx
+msgid "Play anyway"
 msgstr ""
 
 #: src/pages/item.tsx
@@ -2884,6 +3066,10 @@ msgstr ""
 msgid "Play now"
 msgstr ""
 
+#: src/pages/item.tsx
+msgid "Play on"
+msgstr ""
+
 #: src/components/item-menu.tsx
 #: src/components/remote-sheet.tsx
 #: src/pages/item.tsx
@@ -2892,6 +3078,10 @@ msgstr ""
 
 #: src/lib/input/actions.ts
 msgid "Play or pause"
+msgstr ""
+
+#: src/lib/input/actions.ts
+msgid "Play or pause, or go to the controls"
 msgstr ""
 
 #: src/pages/settings/playback.tsx
@@ -2962,7 +3152,9 @@ msgid "Player link"
 msgstr ""
 
 #: src/components/party/party-sheet.tsx
+#: src/components/player/chapters.tsx
 #: src/components/player/episodes.tsx
+#: src/components/playlists.tsx
 #: src/components/sessions.tsx
 #: src/components/version-picker.tsx
 msgid "Playing"
@@ -2982,6 +3174,17 @@ msgstr ""
 
 #: src/pages/settings/playback.tsx
 msgid "Playing on and the next and previous buttons pass over episodes marked as filler. You can still play one yourself."
+msgstr ""
+
+#: src/components/player/options.tsx
+#: src/components/playlists.tsx
+#: src/pages/item.tsx
+msgid "Playlist"
+msgstr ""
+
+#: src/components/layout.tsx
+#: src/components/playlists.tsx
+msgid "Playlists"
 msgstr ""
 
 #: src/components/party/party-sheet.tsx
@@ -3033,10 +3236,16 @@ msgstr ""
 msgid "Preview"
 msgstr ""
 
-#: src/pages/settings/playback.tsx
+#: src/pages/settings/interface.tsx
 msgid "Previews"
 msgstr ""
 
+#: src/pages/settings/playback.tsx
+msgctxt "Episode segments showing the next episode"
+msgid "Previews"
+msgstr ""
+
+#: src/components/player/controls.tsx
 #: src/components/remote-sheet.tsx
 #: src/lib/i18n.ts
 msgid "Previous"
@@ -3106,6 +3315,10 @@ msgstr ""
 msgid "Raises the centre channel, where surround sound puts dialogue. Not for sound passed through."
 msgstr ""
 
+#: src/pages/item.tsx
+msgid "Random"
+msgstr ""
+
 #: src/components/item-menu.tsx
 #: src/components/random-pick.tsx
 #: src/pages/item.tsx
@@ -3121,11 +3334,16 @@ msgid "Random pick"
 msgstr ""
 
 #: src/components/rating.tsx
+#: src/pages/item.tsx
 msgid "Rate"
 msgstr ""
 
 #: src/pages/item.tsx
 msgid "Rate season"
+msgstr ""
+
+#: src/components/scores.tsx
+msgid "Rating"
 msgstr ""
 
 #: src/components/party/party-sheet.tsx
@@ -3162,6 +3380,7 @@ msgid "Red"
 msgstr ""
 
 #: src/components/no-catalogs.tsx
+#: src/components/no-details.tsx
 msgid "Refresh"
 msgstr ""
 
@@ -3222,6 +3441,10 @@ msgstr ""
 msgid "Remove from history"
 msgstr ""
 
+#: src/components/playlists.tsx
+msgid "Remove from playlist"
+msgstr ""
+
 #: src/pages/downloads.tsx
 msgid "Remove from the list, keep the file"
 msgstr ""
@@ -3232,6 +3455,14 @@ msgstr ""
 
 #: src/pages/history.tsx
 msgid "Removed from history"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Rename"
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Repeat"
 msgstr ""
 
 #: src/pages/settings/apps.tsx
@@ -3341,6 +3572,10 @@ msgstr ""
 msgid "Rotates through featured titles"
 msgstr ""
 
+#: src/components/scores.tsx
+msgid "Rotten Tomatoes audience"
+msgstr ""
+
 #: src/pages/settings/interface.tsx
 msgid "Row"
 msgstr ""
@@ -3362,6 +3597,7 @@ msgstr ""
 msgid "Sans serif"
 msgstr ""
 
+#: src/components/playlists.tsx
 #: src/components/version-settings.tsx
 #: src/pages/settings/apps.tsx
 msgid "Save"
@@ -3436,6 +3672,7 @@ msgid "SDH, with sounds described"
 msgstr ""
 
 #: src/components/layout.tsx
+#: src/components/licenses.tsx
 #: src/components/version-settings.tsx
 #: src/lib/input/actions.ts
 #: src/pages/discover.tsx
@@ -3462,6 +3699,10 @@ msgstr ""
 
 #: src/lib/discord.ts
 msgid "Searching"
+msgstr ""
+
+#: src/components/player/pause-screen.tsx
+msgid "Season {season}"
 msgstr ""
 
 #: src/components/item-menu.tsx
@@ -3603,12 +3844,16 @@ msgstr ""
 msgid "Show subtitles later"
 msgstr ""
 
-#: src/lib/input/actions.ts
-msgid "Show the controls"
+#: src/pages/settings/playback.tsx
+msgid "Show the controls on pause and skip"
 msgstr ""
 
 #: src/pages/settings/playback.tsx
 msgid "Show the prompt"
+msgstr ""
+
+#: src/pages/settings/playback.tsx
+msgid "Show the time"
 msgstr ""
 
 #: src/components/player/controls.tsx
@@ -3652,12 +3897,24 @@ msgstr ""
 msgid "Shows subtitles in your language unless the audio already is."
 msgstr ""
 
+#: src/pages/settings/playback.tsx
+msgid "Shows the time of day at the top of the player with the controls."
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "Shuffle"
+msgstr ""
+
 #: src/pages/settings/interface.tsx
 msgid "Side rail"
 msgstr ""
 
 #: src/pages/settings/interface.tsx
 msgid "Side rail runs down the side of the screen; Top tabs sit along the top of each page."
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "Sidebar"
 msgstr ""
 
 #: src/pages/sign-in.tsx
@@ -3840,6 +4097,10 @@ msgstr ""
 
 #: src/pages/settings/cache.tsx
 msgid "Space to use"
+msgstr ""
+
+#: src/components/player/pause-screen.tsx
+msgid "Specials"
 msgstr ""
 
 #: src/components/player/options.tsx
@@ -4070,6 +4331,10 @@ msgstr ""
 msgid "Tab"
 msgstr ""
 
+#: src/pages/settings/interface.tsx
+msgid "Tab names"
+msgstr ""
+
 #: src/pages/history.tsx
 msgid "Table"
 msgstr ""
@@ -4207,6 +4472,10 @@ msgstr ""
 msgid "The interface is built on its components."
 msgstr ""
 
+#: src/components/licenses.tsx
+msgid "The licences couldn't be loaded."
+msgstr ""
+
 #: src/lib/hosts/shell/player.ts
 msgid "the link answered HTTP {status}"
 msgstr ""
@@ -4229,6 +4498,10 @@ msgstr ""
 
 #: src/pages/settings/apps.tsx
 msgid "The older way mpv draws, for Macs where the others fail. Some Dolby Vision videos show the wrong colours."
+msgstr ""
+
+#: src/components/licenses.tsx
+msgid "The open-source software in this app, and the licence of each."
 msgstr ""
 
 #: src/components/remote-sheet.tsx
@@ -4261,6 +4534,10 @@ msgstr ""
 
 #: src/pages/settings/subtitles.tsx
 msgid "The player's subtitle menu lists subtitles in your languages, ones without a language and the one on. The rest wait under More languages."
+msgstr ""
+
+#: src/components/playlists.tsx
+msgid "The playlist goes; the titles in it stay."
 msgstr ""
 
 #: src/lib/party/party.ts
@@ -4390,6 +4667,10 @@ msgstr ""
 msgid "This server can't list what you've watched."
 msgstr ""
 
+#: src/components/no-details.tsx
+msgid "This server has no details for {id}."
+msgstr ""
+
 #: src/components/no-catalogs.tsx
 msgid "This server shares no movie or show catalogs with this account."
 msgstr ""
@@ -4440,6 +4721,10 @@ msgstr ""
 
 #: src/pages/settings/cache.tsx
 msgid "Three days"
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "Time on each title"
 msgstr ""
 
 #: src/components/player/options.tsx
@@ -4493,6 +4778,7 @@ msgid "Tracks"
 msgstr ""
 
 #: src/lib/playback/trailers.ts
+#: src/pages/item.tsx
 msgid "Trailer"
 msgstr ""
 
@@ -4548,6 +4834,7 @@ msgstr ""
 msgid "Typewriter"
 msgstr ""
 
+#: src/components/episodes.tsx
 #: src/lib/format.ts
 msgid "Unaired"
 msgstr ""
@@ -4586,6 +4873,10 @@ msgstr ""
 
 #: src/lib/input/actions.ts
 msgid "Up"
+msgstr ""
+
+#: src/components/player/next-episode.tsx
+msgid "Up next"
 msgstr ""
 
 #: src/components/player/next-episode.tsx
@@ -4726,6 +5017,11 @@ msgstr ""
 msgid "Video output"
 msgstr ""
 
+#: src/components/licenses.tsx
+msgid "View"
+msgstr ""
+
+#: src/components/licenses.tsx
 #: src/pages/settings/about.tsx
 msgid "Visit"
 msgstr ""
@@ -4806,6 +5102,7 @@ msgid "Watch together"
 msgstr ""
 
 #: src/pages/history.tsx
+#: src/pages/item.tsx
 msgid "Watched"
 msgstr ""
 
@@ -4930,8 +5227,16 @@ msgstr ""
 msgid "Where the navigation goes when the screen is wide enough for a sidebar, such as a tablet held sideways."
 msgstr ""
 
+#: src/pages/settings/interface.tsx
+msgid "Where the navigation goes when the window is wide enough for a sidebar."
+msgstr ""
+
 #: src/pages/settings/index.tsx
 msgid "Where they go and how many run at once"
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "Whether the bar at the bottom, and tabs along the top, name each page."
 msgstr ""
 
 #: src/pages/settings/interface.tsx
@@ -4940,6 +5245,10 @@ msgstr ""
 
 #: src/pages/settings/interface.tsx
 msgid "Whether the rail names each page under its icon."
+msgstr ""
+
+#: src/pages/settings/interface.tsx
+msgid "Whether the tabs name each page beside its icon."
 msgstr ""
 
 #: src/components/shortcut-settings.tsx

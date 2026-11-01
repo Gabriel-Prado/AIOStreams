@@ -2,6 +2,7 @@ import { t } from '@lingui/core/macro';
 import React from 'react';
 import { cn } from '@aiostreams/ui/core/styling';
 import { clock } from '../../lib/format';
+import { isRepeat } from '../../lib/input';
 import { chapterAt, type Chapter } from '../../lib/playback/chapters';
 import { usePlayhead, type Playhead } from '../../lib/playback/playhead';
 import type { ThumbnailFeed } from '../../lib/playback/thumbnails';
@@ -10,7 +11,7 @@ import type { Segment } from './segments';
 const still = () => () => {};
 
 /** How long a skip's picture stays once the skip lands, or once a late picture arrives. */
-const SKIP_PICTURE_MS = 2000;
+const SKIP_PICTURE_MS = 1000;
 
 export const arrowDirection = (key: string) =>
   key === 'ArrowRight' ? 1 : key === 'ArrowLeft' ? -1 : 0;
@@ -42,7 +43,7 @@ export function SeekBar({
   handle: boolean;
   thumbnails?: ThumbnailFeed;
   onSeek(ms: number): void;
-  onStep(direction: number): void;
+  onStep(direction: number, held: boolean): void;
   onTogglePlay(): void;
 }) {
   const positionMs = usePlayhead(playhead, (h) => h.positionMs, live);
@@ -96,7 +97,7 @@ export function SeekBar({
         const direction = arrowDirection(e.key);
         if (!direction && e.key !== 'Enter') return;
         e.preventDefault();
-        if (direction) onStep(direction);
+        if (direction) onStep(direction, isRepeat(e.nativeEvent));
         else onTogglePlay();
       }}
       onPointerDown={(e) => {

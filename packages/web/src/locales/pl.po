@@ -1,7 +1,7 @@
 msgid ""
 msgstr ""
 "POT-Creation-Date: 2026-10-16 20:39+0100\n"
-"PO-Revision-Date: 2026-10-22 14:34+0000\n"
+"PO-Revision-Date: 2026-10-30 19:55+0000\n"
 "Last-Translator: Krzysztof <krzysiek@users.noreply.hosted.weblate.org>\n"
 "Language-Team: Polish <https://hosted.weblate.org/projects/aiostreams/web-app/pl/>\n"
 "Language: pl\n"
@@ -38,6 +38,10 @@ msgstr "{count, plural, one {# minuta} few {# minuty} many {# minut} other {# mi
 #: src/pages/settings/playback.tsx
 msgid "{count, plural, one {# second} other {# seconds}}"
 msgstr "{count, plural, one {# sekunda} few {# sekundy} many {# sekund} other {# sekundy}}"
+
+#: src/components/playlists.tsx
+msgid "{count, plural, one {# title} other {# titles}}"
+msgstr "{count, plural, one {# tytuł} few {# tytuły} many {# tytułów} other {# tytułu}}"
 
 #: src/components/party/party-sheet.tsx
 msgid "{count, plural, one {# watching · on {on}} other {# watching · on {on}}}"
@@ -121,7 +125,7 @@ msgstr "{inProgress, plural, one {# w trakcie} other {# w trakcie}}"
 msgid "{key} is taken by {taken}"
 msgstr "{key} jest zajęte przez {taken}"
 
-#: src/pages/downloads.tsx
+#: src/components/card-preview.tsx src/pages/downloads.tsx
 msgid "{left} left"
 msgstr "Pozostało {left}"
 
@@ -303,6 +307,10 @@ msgstr "Dźwięk przestrzenny 7.1"
 msgid "A badge shows on each version whose text matches its pattern: the name and description your formatter writes, the file name, and the tags read from it."
 msgstr "Na każdej wersji wyświetla się etykieta, której tekst pasuje do jej wzorca: nazwa i opis utworzone przez Twój formatter, nazwa pliku oraz odczytane z niego tagi."
 
+#: src/pages/settings/interface.tsx
+msgid "A card you rest on grows into a bigger preview with its details, while the hero rotates."
+msgstr "Karta po zatrzymaniu na niej powiększa się i wyświetla szczegóły, a główny baner zmienia się automatycznie."
+
 #: src/components/party/party-sheet.tsx
 msgid "A code is looked up on the relay picked above."
 msgstr "Kod jest sprawdzany na wybranym powyżej serwerze pośredniczącym."
@@ -333,11 +341,11 @@ msgstr "Określony czas przed końcem."
 
 #: src/pages/settings/audio.tsx
 msgid "A track the version marks as its default plays even when another is in one of your languages. Turn this off for your languages to always win."
-msgstr "Ścieżka oznaczona przez wersję jako domyślna odtwarza się nawet wtedy, gdy inna ścieżka jest w jednym z Twoich języków. Wyłącz to, aby Twoje języki zawsze miały pierwszeństwo."
+msgstr "Ścieżka oznaczona w danej wersji jako domyślna jest odtwarzana nawet wtedy, gdy dostępna jest inna w jednym z Twoich języków. Wyłącz tę opcję, aby Twoje języki zawsze miały pierwszeństwo."
 
 #: src/pages/settings/audio.tsx
 msgid "A version plays the first of these it has, otherwise its own default. Original language is the one the title was made in."
-msgstr "Odtwarzana jest ścieżka według tej kolejności, jeśli wybrana wersja ją posiada, a w przeciwnym razie domyślna ścieżka tej wersji. Język oryginalny to ten, w którym powstał tytuł."
+msgstr "Języki z listy są sprawdzane po kolei – odtwarzany jest pierwszy dostępny w danej wersji, a w przeciwnym razie jej ścieżka domyślna. Język oryginalny to ten, w którym powstał tytuł."
 
 #: src/pages/settings/cache.tsx
 msgid "A week"
@@ -408,9 +416,25 @@ msgstr "Dodaj katalogi do swojej konfiguracji, następnie odśwież."
 msgid "Add favourite"
 msgstr "Dodaj do ulubionych"
 
+#: src/components/playlists.tsx
+msgid "Add from Continue watching"
+msgstr "Dodaj z Kontynuuj oglądanie"
+
+#: src/components/item-menu.tsx src/components/playlists.tsx src/pages/item.tsx
+msgid "Add to playlist"
+msgstr "Dodaj do playlisty"
+
+#: src/components/playlists.tsx
+msgid "Add to this playlist"
+msgstr "Dodaj do tej playlisty"
+
 #: src/components/player/controls.tsx
 msgid "Added {name}"
 msgstr "Dodano {name}"
+
+#: src/components/playlists.tsx src/pages/player.tsx
+msgid "Added to {name}"
+msgstr "Dodano do {name}"
 
 #: src/pages/settings/account.tsx
 msgid "Addons, catalogs and users are set up on the configuration page."
@@ -453,9 +477,17 @@ msgstr "Wszystkie odcinki"
 msgid "All fields"
 msgstr "Wszystkie pola"
 
+#: src/components/playlists.tsx
+msgid "All playlists"
+msgstr "Wszystkie playlisty"
+
 #: src/lib/downloads/index.ts
 msgid "Already downloaded or on the way"
 msgstr "Już pobrane lub w trakcie"
+
+#: src/components/playlists.tsx
+msgid "Already in {name}"
+msgstr "Znajduje się już w {name}"
 
 #: src/components/send-report.tsx
 msgid "Also send to the developer"
@@ -479,8 +511,8 @@ msgid "Always shows subtitles, in your language when the version has them."
 msgstr "Zawsze pokazuj napisy w Twoim języku, jeśli wybrana wersja je posiada."
 
 #: src/pages/settings/audio.tsx
-msgid "An audio track you pick while watching a show sets the language for its other episodes. Picking the one your languages would play forgets it."
-msgstr "Ręcznie wybrana ścieżka audio obowiązuje również w kolejnych odcinkach. Przełączenie na język domyślny powoduje usunięcie tego wyboru."
+msgid "An audio track you pick while watching a show sets the language for its other episodes. Picking what the settings above would play forgets it."
+msgstr "Ręcznie wybrana ścieżka audio obowiązuje również w kolejnych odcinkach. Wybór ścieżki dźwiękowej zgodnej z powyższymi ustawieniami spowoduje usunięcie zapamiętanego wyboru."
 
 #: src/lib/hosts/jellyfin-android.ts src/pages/settings/about.tsx
 #: src/pages/settings/index.tsx
@@ -562,7 +594,7 @@ msgstr "Audio"
 
 #: src/pages/settings/audio.tsx
 msgid "Audio description, narrating what is on screen"
-msgstr "Audiodeskrypcja, opisująca to, co dzieje się na ekranie"
+msgstr "Audiodeskrypcja (opisuje to, co dzieje się na ekranie)"
 
 #: src/pages/settings/audio.tsx
 msgid "Audio languages"
@@ -570,7 +602,7 @@ msgstr "Języki audio"
 
 #: src/pages/settings/audio.tsx
 msgid "Audio types"
-msgstr "Typy audio"
+msgstr "Rodzaje audio"
 
 #: src/components/player/keys.ts
 msgid "Audio: {label}"
@@ -589,10 +621,11 @@ msgstr "Automatycznie"
 msgid "Automatic lists episodes on narrow screens and puts them in a row on wide ones."
 msgstr "Automatycznie układa odcinki w pionowej liście na wąskich ekranach i w rzędzie na szerokich."
 
-#: src/components/layout.tsx src/components/party/party-sheet.tsx
-#: src/components/player/controls.tsx src/components/player/next-episode.tsx
-#: src/lib/input/actions.ts src/pages/player.tsx src/pages/servers.tsx
-#: src/pages/sign-in.tsx src/pages/trailer.tsx
+#: src/components/layout.tsx src/components/licenses.tsx
+#: src/components/party/party-sheet.tsx src/components/player/controls.tsx
+#: src/components/player/next-episode.tsx src/lib/input/actions.ts
+#: src/pages/player.tsx src/pages/servers.tsx src/pages/sign-in.tsx
+#: src/pages/trailer.tsx
 msgid "Back"
 msgstr "Cofnij"
 
@@ -685,10 +718,6 @@ msgstr "Browser Search"
 msgid "Browsing"
 msgstr "Przeglądanie"
 
-#: src/pages/settings/about.tsx
-msgid "Builds the mpv library this app ships with."
-msgstr "Kompiluje bibliotekę mpv dołączoną do tej aplikacji."
-
 #: src/lib/playback/player-choice.ts
 msgid "Built-in mpv"
 msgstr "Wbudowany mpv"
@@ -726,10 +755,14 @@ msgstr "Serwer nieosiągalny"
 msgid "Can’t reach the server"
 msgstr "Brak połączenia z serwerem"
 
-#: src/components/send-report.tsx src/components/version-settings.tsx
-#: src/lib/i18n.ts src/pages/downloads.tsx
+#: src/components/playlists.tsx src/components/send-report.tsx
+#: src/components/version-settings.tsx src/lib/i18n.ts src/pages/downloads.tsx
 msgid "Cancel"
 msgstr "Anuluj"
+
+#: src/pages/settings/interface.tsx
+msgid "Cards"
+msgstr "Karty"
 
 #: src/components/people.tsx
 msgid "Cast"
@@ -752,9 +785,8 @@ msgid "Change folder"
 msgstr "Zmień folder"
 
 #: src/components/party/reaction-setting.tsx
-#, fuzzy
 msgid "Change reactions"
-msgstr "Zmień skróty"
+msgstr "Zmień reakcje"
 
 #: src/components/no-catalogs.tsx src/pages/settings/account.tsx
 #: src/pages/sign-in.tsx
@@ -781,11 +813,11 @@ msgstr "Kanał"
 msgid "Channels"
 msgstr "Kanały"
 
-#: src/components/player/keys.ts src/components/player/options.tsx
+#: src/components/player/chapters.tsx src/components/player/keys.ts
 msgid "Chapter {number}"
 msgstr "Rozdział {number}"
 
-#: src/components/player/options.tsx
+#: src/components/player/chapters.tsx src/components/player/options.tsx
 msgid "Chapters"
 msgstr "Rozdziały"
 
@@ -863,7 +895,7 @@ msgstr "Połącz wyniki filmów i seriali"
 
 #: src/pages/settings/audio.tsx
 msgid "Commentary"
-msgstr "Komentarz"
+msgstr "Ścieżka z komentarzem"
 
 #: src/pages/settings/apps.tsx
 msgid "Compatibility"
@@ -946,6 +978,10 @@ msgstr "Kopiuj link streama"
 msgid "Corner button"
 msgstr "Przycisk w rogu"
 
+#: src/components/playlists.tsx src/pages/player.tsx
+msgid "Could not add to {name}"
+msgstr "Nie udało się dodać do {name}"
+
 #: src/lib/hosts/shell/index.ts
 msgid "Could not check: {error}"
 msgstr "Nie można sprawdzić: {error}"
@@ -978,6 +1014,10 @@ msgstr "Nie udało się ich skopiować"
 msgid "Could not find versions of that episode"
 msgstr "Nie udało się znaleźć wersji tego odcinka"
 
+#: src/components/player/next-episode.tsx
+msgid "Could not find versions of that title"
+msgstr "Nie udało się znaleźć wersji tego tytułu"
+
 #: src/lib/downloads/index.ts
 msgid "Could not find versions: {message}"
 msgstr "Nie udało się znaleźć wersji: {message}"
@@ -1002,6 +1042,10 @@ msgstr "Nie udało się wczytać odcinków."
 msgid "Could not load the history"
 msgstr "Nie udało się wczytać historii"
 
+#: src/components/playlists.tsx
+msgid "Could not load the playlists."
+msgstr "Nie udało się wczytać playlist."
+
 #: src/components/version-picker.tsx
 msgid "Could not load the versions: {loadError}"
 msgstr "Nie udało się wczytać wersji: {loadError}"
@@ -1018,6 +1062,10 @@ msgstr "Nie udało się wczytać tego katalogu"
 msgid "Could not load this person"
 msgstr "Nie udało się wczytać danych tej osoby"
 
+#: src/components/playlists.tsx
+msgid "Could not load this playlist."
+msgstr "Nie udało się wczytać tej playlisty."
+
 #: src/pages/item.tsx
 msgid "Could not load this title"
 msgstr "Nie udało się wczytać tego tytułu"
@@ -1031,9 +1079,8 @@ msgid "Could not load your favourites"
 msgstr "Nie udało się wczytać Twoich ulubionych"
 
 #: src/components/random-pick.tsx
-#, fuzzy
 msgid "Could not pick one."
-msgstr "Nie udało się dołączyć"
+msgstr "Nie udało się nic wybrać."
 
 #: src/lib/subtitles/files.ts
 msgid "Could not read that file"
@@ -1071,13 +1118,22 @@ msgstr "Odlicza czas, a następnie odtwarza kolejny odcinek w podobnej wersji. P
 msgid "Counts down, then plays the next episode. Off, the prompt waits for you."
 msgstr "Odlicza czas, a następnie odtwarza kolejny odcinek. Po wyłączeniu, komunikat czeka na Twoją decyzję."
 
+#: src/components/playlists.tsx
+msgid "Create"
+msgstr "Utwórz"
+
 #: src/components/people.tsx
 msgid "Creator"
 msgstr "Twórca"
 
-#: src/pages/settings/about.tsx src/pages/settings/playback.tsx
+#: src/pages/settings/playback.tsx
 msgid "Credits"
 msgstr "Napisy końcowe"
+
+#: src/pages/settings/about.tsx
+msgctxt "Projects the app is built on"
+msgid "Credits"
+msgstr "Twórcy"
 
 #: src/pages/settings/playback.tsx
 msgid "Credits that end an episode are left to the next episode prompt when it shows."
@@ -1157,13 +1213,21 @@ msgstr "Opóźnienie"
 msgid "Delay: {delayLabel}"
 msgstr "Opóźnienie: {delayLabel}"
 
-#: src/pages/downloads.tsx
+#: src/components/playlists.tsx src/pages/downloads.tsx
 msgid "Delete"
 msgstr "Usuń"
+
+#: src/components/playlists.tsx
+msgid "Delete {name}"
+msgstr "Usuń {name}"
 
 #: src/pages/downloads.tsx
 msgid "Delete all"
 msgstr "Usuń wszystko"
+
+#: src/components/playlists.tsx
+msgid "Delete playlist"
+msgstr "Usuń playlistę"
 
 #: src/pages/settings/theme.tsx
 msgid "Desert"
@@ -1267,8 +1331,8 @@ msgid "Donate to Me"
 msgstr "Wesprzyj mnie"
 
 #: src/components/party/reaction-setting.tsx
-#: src/components/player/subtitle-sync.tsx src/components/send-report.tsx
-#: src/components/version-settings.tsx
+#: src/components/player/subtitle-sync.tsx src/components/playlists.tsx
+#: src/components/send-report.tsx src/components/version-settings.tsx
 msgid "Done"
 msgstr "Gotowe"
 
@@ -1349,7 +1413,7 @@ msgstr "Edytuj"
 
 #: src/components/player/controls.tsx
 msgid "Ends at {endsAt}"
-msgstr ""
+msgstr "Koniec o {endsAt}"
 
 #: src/pages/settings/playback.tsx
 msgid "Engine"
@@ -1379,7 +1443,7 @@ msgstr "Wpisz ten kod w sekcji Szybkie łączenie (Quick Connect) w zalogowanej 
 msgid "Enter your password."
 msgstr "Wprowadź hasło."
 
-#: src/components/episodes.tsx
+#: src/components/episodes.tsx src/components/player/pause-screen.tsx
 msgid "Episode {number}"
 msgstr "Odcinek {number}"
 
@@ -1484,6 +1548,11 @@ msgstr "Filtruj"
 #: src/components/version-picker.tsx
 msgid "Filter versions"
 msgstr "Filtruj wersje"
+
+#: src/pages/settings/playback.tsx
+#, fuzzy
+msgid "Find versions when a title opens"
+msgstr "Nie udało się znaleźć wersji tego tytułu"
 
 #: src/components/download-button.tsx
 msgid "Finding a version to download"
@@ -1681,9 +1750,8 @@ msgid "Host"
 msgstr "Gospodarz"
 
 #: src/pages/settings/subtitles.tsx
-#, fuzzy
 msgid "How far subtitles sit above their usual place near the bottom, or below it down to the edge."
-msgstr "Jak wysoko napisy znajdują się nad swoim zwykłym miejscem na dole."
+msgstr "Pozwala przesunąć napisy w górę względem dołu ekranu lub w dół aż do samej krawędzi."
 
 #: src/pages/settings/playback.tsx
 msgid "How far the skip buttons, double taps and the arrow keys jump."
@@ -1781,6 +1849,10 @@ msgstr "Kod lub link z zaproszeniem"
 msgid "Invite link copied"
 msgstr "Skopiowano link z zaproszeniem"
 
+#: src/components/licenses.tsx
+msgid "It came with no licence text."
+msgstr "Brak treści licencji."
+
 #: src/components/send-report.tsx
 msgid "It carries this device's details and the app's recent log. Passwords and tokens are left out."
 msgstr "Zawiera informacje o tym urządzeniu i ostatnie dzienniki aplikacji. Hasła i tokeny są pomijane."
@@ -1792,6 +1864,10 @@ msgstr "Nie dotarło do twórcy, a jedynie do tego serwera: {forwardError}"
 #: src/pages/settings/theme.tsx
 msgid "It will be undone unless you keep it."
 msgstr "Zmiana zostanie cofnięta, jeśli jej nie zachowasz."
+
+#: src/pages/settings/about.tsx
+msgid "Its Metal and AVFoundation video outputs."
+msgstr "Udostępnia wyjścia wideo Metal i AVFoundation."
 
 #: src/pages/settings/about.tsx
 msgid "Jellyfin API"
@@ -1934,6 +2010,10 @@ msgstr "Pozwala dekoderowi telewizora samodzielnie synchronizować obraz i dźwi
 msgid "Lets the TV's decoder keep picture and sound in step itself, which plays 4K and HDR more smoothly on some TVs. Turn it off if video stutters or stays black."
 msgstr "Pozwala dekoderowi telewizora samodzielnie synchronizować obraz i dźwięk, co zapewnia płynniejsze odtwarzanie 4K i HDR na niektórych telewizorach. Wyłącz, jeśli wideo się zacina lub ekran pozostaje czarny."
 
+#: src/components/licenses.tsx
+msgid "Licences"
+msgstr "Licencje"
+
 #: src/components/version-settings.tsx
 msgid "Link a pack someone shares, in this app's format or the one Fusion and Nuvio use. It stays up to date with its author's changes."
 msgstr "Podłącz udostępnioną paczkę w formacie tej aplikacji lub używanym przez Fusion i Nuvio. Będzie automatycznie aktualizowana wraz ze zmianami autora."
@@ -1974,6 +2054,10 @@ msgstr "Dzienniki zdarzeń (logi)"
 msgid "Looking for the party…"
 msgstr "Szukanie wspólnego oglądania…"
 
+#: src/pages/settings/playback.tsx
+msgid "Looks for versions as soon as a title's page opens, so Play and the version list don't wait. Each title you open is looked up, even if you don't play it."
+msgstr ""
+
 #: src/components/party/party-sheet.tsx
 msgid "Lost the connection to {relay}. Reconnecting… Your player carries on, and gets back in step once it's back."
 msgstr "Utracono połączenie z {relay}. Ponowne łączenie… Twój odtwarzacz kontynuuje pracę i zsynchronizuje się po odzyskaniu połączenia."
@@ -1992,7 +2076,7 @@ msgstr "Magenta"
 
 #: src/pages/settings/audio.tsx
 msgid "Main"
-msgstr "Główna"
+msgstr "Ścieżka główna"
 
 #: src/components/version-picker.tsx
 msgid "Mark as watched"
@@ -2063,8 +2147,8 @@ msgstr "Brakujące"
 msgid "Monospace"
 msgstr "Stała szerokość (Monospace)"
 
-#: src/components/overview.tsx src/components/version-picker.tsx
-#: src/pages/downloads.tsx
+#: src/components/overview.tsx src/components/playlists.tsx
+#: src/components/version-picker.tsx src/pages/downloads.tsx
 msgid "More"
 msgstr "Więcej"
 
@@ -2096,11 +2180,11 @@ msgstr "Przesuń {name} w dół"
 msgid "Move {name} up"
 msgstr "Przesuń {name} w górę"
 
-#: src/components/version-settings.tsx
+#: src/components/playlists.tsx src/components/version-settings.tsx
 msgid "Move down"
 msgstr "Przesuń w dół"
 
-#: src/components/version-settings.tsx
+#: src/components/playlists.tsx src/components/version-settings.tsx
 msgid "Move up"
 msgstr "Przesuń w górę"
 
@@ -2146,7 +2230,7 @@ msgstr "Wycisz"
 msgid "Mute key"
 msgstr "Klawisz wyciszenia"
 
-#: src/components/version-settings.tsx
+#: src/components/playlists.tsx src/components/version-settings.tsx
 msgid "Name"
 msgstr "Nazwa"
 
@@ -2170,7 +2254,12 @@ msgstr "Nigdy"
 msgid "New code"
 msgstr "Nowy kod"
 
-#: src/components/remote-sheet.tsx src/lib/i18n.ts
+#: src/components/playlists.tsx
+msgid "New playlist"
+msgstr "Nowa playlista"
+
+#: src/components/player/controls.tsx src/components/remote-sheet.tsx
+#: src/lib/i18n.ts
 msgid "Next"
 msgstr "Następny"
 
@@ -2190,6 +2279,10 @@ msgstr "Następny odcinek"
 #: src/pages/settings/index.tsx
 msgid "Next episode, controls and players"
 msgstr "Następny odcinek, sterowanie i odtwarzacze"
+
+#: src/components/player/next-episode.tsx
+msgid "Next in {playlistName}"
+msgstr "Następny w {playlistName}"
 
 #: src/pages/calendar.tsx
 msgid "Next month"
@@ -2258,6 +2351,10 @@ msgstr "Na {relay} nie ma wspólnego oglądania o tym kodzie."
 #: src/lib/playback/play.ts
 msgid "No playable version was found"
 msgstr "Nie znaleziono wersji możliwej do odtworzenia"
+
+#: src/components/playlists.tsx
+msgid "No playlists yet. Make one here, or add a title to one from its menu."
+msgstr "Brak playlist. Utwórz ją tutaj lub dodaj tytuł do playlisty z poziomu jego menu."
 
 #: src/lib/servers.ts
 msgid "No server answered at that address."
@@ -2336,6 +2433,10 @@ msgstr "Nic nie znaleziono dla \"{query}\"."
 msgid "Nothing found."
 msgstr "Nic nie znaleziono."
 
+#: src/components/playlists.tsx
+msgid "Nothing here yet. Add titles from their menu, or from the suggestions below."
+msgstr "Jeszcze nic tu nie ma. Dodaj tytuły z poziomu ich menu lub z poniższych propozycji."
+
 #: src/pages/discover.tsx src/pages/item.tsx
 msgid "Nothing here."
 msgstr "Nic tu nie ma."
@@ -2348,8 +2449,9 @@ msgstr "Nic nie jest tam teraz odtwarzane."
 msgid "Nothing marked as a favourite yet."
 msgstr "Nie oznaczono jeszcze niczego jako ulubione."
 
-#: src/components/version-settings.tsx src/pages/discover.tsx
-#: src/pages/settings/audio.tsx src/pages/settings/interface.tsx
+#: src/components/licenses.tsx src/components/version-settings.tsx
+#: src/pages/discover.tsx src/pages/settings/audio.tsx
+#: src/pages/settings/interface.tsx
 msgid "Nothing matches."
 msgstr "Brak pasujących wyników."
 
@@ -2498,6 +2600,10 @@ msgstr "Otwórz link"
 msgid "Open main menu"
 msgstr "Otwórz menu główne"
 
+#: src/components/playlists.tsx
+msgid "Open playlist"
+msgstr "Otwórz playlistę"
+
 #: src/pages/downloads.tsx
 msgid "Open the app's downloads"
 msgstr "Otwórz pobrane w aplikacji"
@@ -2548,7 +2654,7 @@ msgstr "Opcje zachowywane wewnętrznie przez aplikację."
 
 #: src/components/party/reaction-setting.tsx
 msgid "Or type one"
-msgstr ""
+msgstr "Lub wpisz własne"
 
 #: src/pages/settings/audio.tsx
 msgid "Original language"
@@ -2698,16 +2804,15 @@ msgstr "Wybierz kolor"
 
 #: src/components/party/reaction-setting.tsx
 msgid "Pick a slot, then what goes in it."
-msgstr ""
+msgstr "Wybierz pole, a następnie to, co ma się w nim znaleźć."
 
 #: src/pages/downloads.tsx
 msgid "Pick a version"
 msgstr "Wybierz wersję"
 
 #: src/components/random-pick.tsx
-#, fuzzy
 msgid "Pick again"
-msgstr "Wybierz wersję"
+msgstr "Wybierz ponownie"
 
 #: src/components/version-settings.tsx
 msgid "Pick fields to search only those parts of a version."
@@ -2754,9 +2859,9 @@ msgid "Pink"
 msgstr "Różowy"
 
 #: src/components/hero.tsx src/components/item-menu.tsx
-#: src/components/player/controls.tsx src/components/random-pick.tsx
-#: src/components/remote-sheet.tsx src/lib/input/actions.ts
-#: src/lib/input/keys.ts src/pages/item.tsx
+#: src/components/player/controls.tsx src/components/playlists.tsx
+#: src/components/random-pick.tsx src/components/remote-sheet.tsx
+#: src/lib/input/actions.ts src/lib/input/keys.ts src/pages/item.tsx
 msgid "Play"
 msgstr "Odtwórz"
 
@@ -2823,7 +2928,7 @@ msgstr "Odtwarzaj dźwięk później"
 
 #: src/pages/settings/audio.tsx
 msgid "Play the version's default track first"
-msgstr "Odtwórz najpierw domyślną ścieżkę danej wersji"
+msgstr "Odtwarzaj domyślną ścieżkę wersji w pierwszej kolejności"
 
 #: src/pages/settings/playback.tsx
 msgid "Play versions in"
@@ -2862,7 +2967,8 @@ msgstr "Odtwarzacz"
 msgid "Player link"
 msgstr "Link do odtwarzacza"
 
-#: src/components/party/party-sheet.tsx src/components/player/episodes.tsx
+#: src/components/party/party-sheet.tsx src/components/player/chapters.tsx
+#: src/components/player/episodes.tsx src/components/playlists.tsx
 #: src/components/sessions.tsx src/components/version-picker.tsx
 msgid "Playing"
 msgstr "Odtwarzanie"
@@ -2882,6 +2988,14 @@ msgstr "Odtwarzanie na {name}"
 #: src/pages/settings/playback.tsx
 msgid "Playing on and the next and previous buttons pass over episodes marked as filler. You can still play one yourself."
 msgstr "Automatyczne odtwarzanie oraz przyciski następnego i poprzedniego odcinka pomijają odcinki oznaczone jako zapychacze (fillery). Nadal możesz odtworzyć je ręcznie."
+
+#: src/components/player/options.tsx src/components/playlists.tsx
+msgid "Playlist"
+msgstr "Playlista"
+
+#: src/components/layout.tsx src/components/playlists.tsx
+msgid "Playlists"
+msgstr "Playlisty"
 
 #: src/components/party/party-sheet.tsx
 msgid "Plays <0>{title}</0> for everyone who joins."
@@ -2925,17 +3039,23 @@ msgstr "Naciśnij klawisz"
 
 #: src/lib/hosts/shell/android.ts
 msgid "Press Back again to leave"
-msgstr ""
+msgstr "Naciśnij Wstecz ponownie, aby wyjść"
 
 #: src/components/version-settings.tsx src/pages/settings/subtitles.tsx
 msgid "Preview"
 msgstr "Podgląd"
 
+#: src/pages/settings/interface.tsx
+msgid "Previews"
+msgstr "Podglądy"
+
 #: src/pages/settings/playback.tsx
+msgctxt "Episode segments showing the next episode"
 msgid "Previews"
 msgstr "Zapowiedzi"
 
-#: src/components/remote-sheet.tsx src/lib/i18n.ts
+#: src/components/player/controls.tsx src/components/remote-sheet.tsx
+#: src/lib/i18n.ts
 msgid "Previous"
 msgstr "Poprzedni"
 
@@ -3001,18 +3121,16 @@ msgstr "Wzmacnia kanał centralny, w którym dźwięk przestrzenny umieszcza dia
 
 #: src/components/item-menu.tsx src/components/random-pick.tsx
 #: src/pages/item.tsx
-#, fuzzy
 msgid "Random episode"
-msgstr "Ukryj odcinki"
+msgstr "Losowy odcinek"
 
 #: src/components/random-pick.tsx
-#, fuzzy
 msgid "Random favourite"
-msgstr "Dodaj do ulubionych"
+msgstr "Losowy ulubiony"
 
 #: src/pages/favourites.tsx
 msgid "Random pick"
-msgstr ""
+msgstr "Losowy wybór"
 
 #: src/components/rating.tsx
 msgid "Rate"
@@ -3021,6 +3139,10 @@ msgstr "Oceń"
 #: src/pages/item.tsx
 msgid "Rate season"
 msgstr "Oceń sezon"
+
+#: src/components/scores.tsx
+msgid "Rating"
+msgstr "Ocena"
 
 #: src/components/party/party-sheet.tsx
 msgid "React with {emoji}"
@@ -3112,6 +3234,10 @@ msgstr "Usuń z „Kontynuuj oglądanie”"
 msgid "Remove from history"
 msgstr "Usuń z historii"
 
+#: src/components/playlists.tsx
+msgid "Remove from playlist"
+msgstr "Usuń z playlisty"
+
 #: src/pages/downloads.tsx
 msgid "Remove from the list, keep the file"
 msgstr "Usuń z listy, zachowaj plik"
@@ -3123,6 +3249,14 @@ msgstr "Usuń serwer"
 #: src/pages/history.tsx
 msgid "Removed from history"
 msgstr "Usunięto z historii"
+
+#: src/components/playlists.tsx
+msgid "Rename"
+msgstr "Zmień nazwę"
+
+#: src/components/playlists.tsx
+msgid "Repeat"
+msgstr "Powtarzaj"
 
 #: src/pages/settings/apps.tsx
 msgid "Report a problem"
@@ -3227,6 +3361,10 @@ msgstr "W prawo"
 msgid "Rotates through featured titles"
 msgstr "Przełącza rotacyjnie polecane tytuły"
 
+#: src/components/scores.tsx
+msgid "Rotten Tomatoes audience"
+msgstr "Rotten Tomatoes (widzowie)"
+
 #: src/pages/settings/interface.tsx
 msgid "Row"
 msgstr "Rząd"
@@ -3248,7 +3386,8 @@ msgstr "S{s}E{e}"
 msgid "Sans serif"
 msgstr "Bezszeryfowa (Sans serif)"
 
-#: src/components/version-settings.tsx src/pages/settings/apps.tsx
+#: src/components/playlists.tsx src/components/version-settings.tsx
+#: src/pages/settings/apps.tsx
 msgid "Save"
 msgstr "Zapisz"
 
@@ -3320,9 +3459,9 @@ msgstr "Zobaczyłem napisy"
 msgid "SDH, with sounds described"
 msgstr "SDH, z opisem dźwięków (dla niesłyszących)"
 
-#: src/components/layout.tsx src/components/version-settings.tsx
-#: src/lib/input/actions.ts src/pages/discover.tsx src/pages/search.tsx
-#: src/pages/settings/apps.tsx
+#: src/components/layout.tsx src/components/licenses.tsx
+#: src/components/version-settings.tsx src/lib/input/actions.ts
+#: src/pages/discover.tsx src/pages/search.tsx src/pages/settings/apps.tsx
 msgid "Search"
 msgstr "Szukaj"
 
@@ -3345,6 +3484,10 @@ msgstr "Wyszukiwania"
 #: src/lib/discord.ts
 msgid "Searching"
 msgstr "Wyszukiwanie"
+
+#: src/components/player/pause-screen.tsx
+msgid "Season {season}"
+msgstr "Sezon {season}"
 
 #: src/components/item-menu.tsx
 msgid "See the download"
@@ -3488,14 +3631,12 @@ msgid "Show the prompt"
 msgstr "Pokaż zapytanie"
 
 #: src/components/player/controls.tsx
-#, fuzzy
 msgid "Show time left"
-msgstr "Pokazuj napisy później"
+msgstr "Pokazuj pozostały czas"
 
 #: src/components/player/controls.tsx
-#, fuzzy
 msgid "Show time played"
-msgstr "Pokazuj napisy później"
+msgstr "Pokazuj czas odtwarzania"
 
 #: src/components/layout.tsx
 msgid "Showing saved pages"
@@ -3527,6 +3668,10 @@ msgstr "Pokazuje wyniki wyszukiwania w jednej siatce zamiast w osobnych rzędach
 msgid "Shows subtitles in your language unless the audio already is."
 msgstr "Pokazuje napisy w Twoim języku, chyba że ścieżka dźwiękowa już w nim jest."
 
+#: src/components/playlists.tsx
+msgid "Shuffle"
+msgstr "Odtwarzaj losowo"
+
 #: src/pages/settings/interface.tsx
 msgid "Side rail"
 msgstr "Pasek boczny"
@@ -3534,6 +3679,10 @@ msgstr "Pasek boczny"
 #: src/pages/settings/interface.tsx
 msgid "Side rail runs down the side of the screen; Top tabs sit along the top of each page."
 msgstr "Pasek boczny biegnie wzdłuż boku ekranu; Górne karty znajdują się na górze każdej strony."
+
+#: src/pages/settings/interface.tsx
+msgid "Sidebar"
+msgstr "Pasek boczny"
 
 #: src/pages/sign-in.tsx
 msgid "Sign in"
@@ -3657,7 +3806,7 @@ msgstr "Pomijanie"
 
 #: src/components/party/reaction-setting.tsx
 msgid "Slot {n}: {emoji}"
-msgstr ""
+msgstr "Pole {n}: {emoji}"
 
 #: src/lib/input/actions.ts
 msgid "Slower"
@@ -3710,6 +3859,10 @@ msgstr "Spacja"
 #: src/pages/settings/cache.tsx
 msgid "Space to use"
 msgstr "Miejsce do wykorzystania"
+
+#: src/components/player/pause-screen.tsx
+msgid "Specials"
+msgstr "Specjalne"
 
 #: src/components/player/options.tsx
 msgid "Speed"
@@ -3930,6 +4083,10 @@ msgstr "Domyślne systemowe"
 msgid "Tab"
 msgstr "Tab"
 
+#: src/pages/settings/interface.tsx
+msgid "Tab names"
+msgstr "Nazwy kart"
+
 #: src/pages/history.tsx
 msgid "Table"
 msgstr "Tabela"
@@ -4066,6 +4223,10 @@ msgstr "Gospodarz usunął Cię ze wspólnego oglądania."
 msgid "The interface is built on its components."
 msgstr "Interfejs jest zbudowany na bazie jego komponentów."
 
+#: src/components/licenses.tsx
+msgid "The licences couldn't be loaded."
+msgstr "Nie udało się wczytać licencji."
+
 #: src/lib/hosts/shell/player.ts
 msgid "the link answered HTTP {status}"
 msgstr "link odpowiedział kodem HTTP {status}"
@@ -4089,6 +4250,10 @@ msgstr "Film lub serial, którego strona jest obecnie otwarta."
 #: src/pages/settings/apps.tsx
 msgid "The older way mpv draws, for Macs where the others fail. Some Dolby Vision videos show the wrong colours."
 msgstr "Starsza metoda renderowania mpv dla komputerów Mac, na których inne zawodzą. Niektóre filmy w Dolby Vision mogą wyświetlać nieprawidłowe kolory."
+
+#: src/components/licenses.tsx
+msgid "The open-source software in this app, and the licence of each."
+msgstr "Oprogramowanie open source użyte w tej aplikacji oraz licencja każdego z nich."
 
 #: src/components/remote-sheet.tsx
 msgid "The other device could not be reached"
@@ -4121,6 +4286,10 @@ msgstr "odtwarzacz nie mógł odtworzyć tej wersji"
 #: src/pages/settings/subtitles.tsx
 msgid "The player's subtitle menu lists subtitles in your languages, ones without a language and the one on. The rest wait under More languages."
 msgstr "Menu napisów w odtwarzaczu wyświetla napisy w Twoich językach, napisy bez określonego języka oraz aktualnie włączone. Pozostałe znajdują się w sekcji „Więcej języków”."
+
+#: src/components/playlists.tsx
+msgid "The playlist goes; the titles in it stay."
+msgstr "Playlista zostanie usunięta, ale tytuły pozostaną."
 
 #: src/lib/party/party.ts
 msgid "The relay could not read that."
@@ -4258,7 +4427,7 @@ msgstr "Ten serwer narzuca styl aplikacji wszystkim użytkownikom. Twój własny
 
 #: src/components/random-pick.tsx
 msgid "This show has no episodes to pick from yet."
-msgstr ""
+msgstr "Ten serial nie ma jeszcze żadnych odcinków do wyboru."
 
 #: src/pages/trailer.tsx
 msgid "This trailer can't play in the app."
@@ -4443,6 +4612,10 @@ msgid "Up"
 msgstr "W górę"
 
 #: src/components/player/next-episode.tsx
+msgid "Up next"
+msgstr "Kolejne"
+
+#: src/components/player/next-episode.tsx
 msgid "Up next: {upNext}"
 msgstr "Następnie: {upNext}"
 
@@ -4579,7 +4752,11 @@ msgstr "Wideo"
 msgid "Video output"
 msgstr "Wyjście wideo"
 
-#: src/pages/settings/about.tsx
+#: src/components/licenses.tsx
+msgid "View"
+msgstr "Zobacz"
+
+#: src/components/licenses.tsx src/pages/settings/about.tsx
 msgid "Visit"
 msgstr "Odwiedź"
 
@@ -4715,7 +4892,7 @@ msgstr "Co zapisywać"
 
 #: src/components/party/reaction-setting.tsx
 msgid "What you can send from a party's chat."
-msgstr ""
+msgstr "Co możesz wysyłać na czacie wspólnego oglądania."
 
 #: src/pages/settings/apps.tsx
 msgid "What your Discord profile shows. Kept on this device."
@@ -4747,7 +4924,7 @@ msgstr "Gdy wersja zawiera więcej niż jeden rodzaj ścieżki dźwiękowej, odt
 
 #: src/pages/settings/subtitles.tsx
 msgid "When a version has more than one subtitle in your language, the first of these it has shows. Commentary comes last."
-msgstr "Gdy wersja ma więcej niż jedną ścieżkę napisów w Twoim języku, wyświetlana jest pierwsza pasująca z tej listy. Komentatorskie są brane pod uwagę na końcu."
+msgstr "Gdy wersja ma więcej niż jedną ścieżkę napisów w Twoim języku, wyświetlana jest pierwsza pasująca z tej listy. Napisy z komentarzem są brane pod uwagę na końcu."
 
 #: src/pages/settings/subtitles.tsx
 msgid "When the audio is not in my language"
@@ -4777,9 +4954,17 @@ msgstr "Gdzie powstaje aplikacja i gdzie można zgłosić problem."
 msgid "Where the navigation goes when the screen is wide enough for a sidebar, such as a tablet held sideways."
 msgstr "Gdzie umieszczana jest nawigacja, gdy ekran jest wystarczająco szeroki na pasek boczny (np. na tablecie trzymanym poziomo)."
 
+#: src/pages/settings/interface.tsx
+msgid "Where the navigation goes when the window is wide enough for a sidebar."
+msgstr "Miejsce wyświetlania nawigacji, gdy okno jest wystarczająco szerokie dla paska bocznego."
+
 #: src/pages/settings/index.tsx
 msgid "Where they go and how many run at once"
 msgstr "Gdzie trafiają i ile pobiera się jednocześnie"
+
+#: src/pages/settings/interface.tsx
+msgid "Whether the bar at the bottom, and tabs along the top, name each page."
+msgstr "Określa, czy dolny pasek oraz górne karty wyświetlają nazwy poszczególnych stron."
 
 #: src/pages/settings/interface.tsx
 msgid "Whether the rail names each page only while you're in it, or all the time."
@@ -4788,6 +4973,10 @@ msgstr "Czy pasek boczny pokazuje nazwę każdej strony tylko wtedy, gdy na niej
 #: src/pages/settings/interface.tsx
 msgid "Whether the rail names each page under its icon."
 msgstr "Czy pasek boczny wyświetla nazwę każdej strony pod jej ikoną."
+
+#: src/pages/settings/interface.tsx
+msgid "Whether the tabs name each page beside its icon."
+msgstr "Określa, czy karty wyświetlają nazwę każdej strony obok jej ikony."
 
 #: src/components/shortcut-settings.tsx
 msgid "While syncing subtitles by ear."

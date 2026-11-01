@@ -19,6 +19,7 @@ import {
   SUBTITLE_DELAY_LIMIT_MS,
 } from '../subtitles/delay';
 import { subtitleUrl, textSubtitles } from '../subtitles/tracks';
+import { SUBTITLE_LIFT_MS, subtitleHeight } from '../subtitles/style';
 import type { MediaStream, SourceInfo } from '../types';
 import { useLatest } from '../use-latest';
 import type { Chapter } from './chapters';
@@ -43,7 +44,7 @@ import type {
 } from './engine';
 import { usePlayheadWriter } from './playhead';
 import { thumbnailFeed } from './thumbnails';
-import { chooseTracks } from './track-picks';
+import { chooseTracks, serverFacts, trackFacts } from './track-picks';
 
 /** How long the player says it is syncing; an answer after that still shows. */
 const ASKED_WAIT_MS = 10_000;
@@ -53,6 +54,9 @@ const EARLY_END_MS = 30_000;
 
 /** Late enough after the start that reading the file's index for thumbnails doesn't slow it. */
 const THUMBNAIL_INDEX_MS = 5_000;
+
+/** How long subtitles stay at a newly picked height while the controls show. */
+const PLACING_MS = 3_000;
 
 function serverSubtitles(
   client: JellyfinClient,
@@ -79,6 +83,21 @@ function serverSubtitles(
 }
 
 const asTrack = ({ id, label, lang }: Track): Track => ({ id, label, lang });
+
+/** The server's name for a subtitle, with its title, often a release name, moved to a line of its own. */
+function titleApart({
+  label,
+  stream,
+}: ServerSubtitle): Pick<Track, 'label' | 'detail'> {
+  const title = stream.Title?.trim();
+  const at = title ? label.indexOf(title) : -1;
+  if (!title || at <= 0) return { label };
+  const rest = (label.slice(0, at) + label.slice(at + title.length))
+    .replace(/\s+-\s+-\s+/g, ' - ')
+    .replace(/^\s*-\s*|\s*-\s*$/g, '')
+    .trim();
+  return rest ? { label: rest, detail: title } : { label };
+}
 
 /** A subtitle's copy stretched to the video's frame rate, which shows in its place. */
 interface Retimed {
@@ -282,7 +301,7 @@ export function usePlayer(
         );
       }
       case 'advanced':
-        return latest.current.onAdvance?.(event.episode);
+        return latest.current.onAdvance?.(event.next);
       case 'closed':
         return latest.current.onClosed?.();
       case 'subtitle-text':
@@ -293,9 +312,62 @@ export function usePlayer(
   };
 
   const { subtitleStyle } = opts;
+  // A new subtitle height shows where it puts them for a while, under the
+  // controls too, which would otherwise keep them above it.
+  const position = subtitleStyle?.position;
+  const [placing, setPlacing] = React.useState(false);
+  const placedAt = React.useRef(position);
   React.useEffect(() => {
-    engine.setStyle?.({ subtitleStyle, fit, lift });
-  }, [engine, subtitleStyle, fit, lift]);
+    if (position === placedAt.current) return;
+    placedAt.current = position;
+    setPlacing(true);
+    const timer = setTimeout(() => setPlacing(false), PLACING_MS);
+    return () => clearTimeout(timer);
+  }, [position]);
+  const lifted = placing ? 0 : lift;
+
+  // Subtitles slide to a new height, in the controls' time, rather than jump:
+  // a new one every frame, which the players move to at once.
+  const height = subtitleHeight(subtitleStyle, lifted);
+  const shownHeight = React.useRef(height);
+  React.useEffect(() => {
+    if (!engine.setStyle) return;
+    const set = engine.setStyle;
+    const from = shownHeight.current;
+    if (
+      from === height ||
+      matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      shownHeight.current = height;
+      set({ subtitleStyle, fit, height });
+      return;
+    }
+    const start = performance.now();
+    let frame = requestAnimationFrame(function step(now) {
+      const done = Math.min(1, (now - start) / SUBTITLE_LIFT_MS);
+      const value = from + (height - from) * (1 - (1 - done) ** 3);
+      shownHeight.current = value;
+      set({ subtitleStyle, fit, height: value });
+      if (done < 1) frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [engine, subtitleStyle, fit, height]);
+
+  // The controls lift the subtitles exactly while they show; hiding, both
+  // still move for a while.
+  const controlsShown = lift > 0;
+  React.useEffect(() => {
+    if (controlsShown) {
+      engine.showControls?.(true);
+      return;
+    }
+    const timer = setTimeout(
+      () => engine.showControls?.(false),
+      SUBTITLE_LIFT_MS + 100
+    );
+    return () => clearTimeout(timer);
+  }, [engine, controlsShown]);
+  React.useEffect(() => () => engine.showControls?.(false), [engine]);
 
   React.useEffect(() => {
     setRetry(undefined);
@@ -487,8 +559,12 @@ export function usePlayer(
     subtitleTracks: [
       ...subtitleTracks
         .filter((t) => !t.external)
-        .map((t) => ({ ...asTrack(t), file: true })),
-      ...servers.map(asTrack),
+        .map((t) => ({ ...asTrack(t), file: true, facts: trackFacts(t) })),
+      ...servers.map((s) => ({
+        ...asTrack(s),
+        ...titleApart(s),
+        facts: serverFacts(s),
+      })),
       ...subtitleTracks
         .filter(
           (t) =>
@@ -496,9 +572,10 @@ export function usePlayer(
             !t.server &&
             !Object.values(retimed).some((c) => c.name === t.title)
         )
-        .map(asTrack),
+        .map((t) => ({ ...asTrack(t), facts: trackFacts(t) })),
     ],
     subtitleText,
+    subtitleLift: lifted,
     thumbnails,
     togglePlay: () => engine.setPaused(!live.current.paused),
     setPaused: (paused) => engine.setPaused(paused),
@@ -527,7 +604,8 @@ export function usePlayer(
         patch({ subtitleDelayMs: delay });
       }),
     skipAhead: engine.skipAhead && ((skips) => engine.skipAhead!(skips)),
-    liftSubtitles: engine.setStyle && setLift,
+    // Also for players without styles: the page lifts the subtitle it draws for them.
+    liftSubtitles: setLift,
     canReadSubtitle: (id) =>
       servers.some((s) => s.id === id) || !!engine.ownText?.(id),
     subtitleLines: async () => {
@@ -560,7 +638,7 @@ export function usePlayer(
     },
     external: engine.external,
     close: engine.closeWindow && (() => engine.closeWindow!()),
-    queueNext: engine.queueNext && ((episode) => engine.queueNext!(episode)),
+    queueNext: engine.queueNext && ((next) => engine.queueNext!(next)),
     sound: engine.sound,
     fit: engine.fits,
     retry,

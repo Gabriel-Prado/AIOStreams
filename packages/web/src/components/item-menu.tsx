@@ -9,6 +9,7 @@ import {
   BiDownload,
   BiHeart,
   BiInfoCircle,
+  BiListPlus,
   BiListUl,
   BiPlay,
   BiReset,
@@ -45,6 +46,9 @@ import {
 } from '../lib/downloads';
 import { useStraightPlay, useVersionPicker } from './version-picker';
 import { useHeroTarget } from './hero';
+import { useCardPreview } from './card-preview';
+import { openAddToPlaylist } from './playlists';
+import { playable as canPlay } from '../lib/playlists';
 import type { BaseItemDto } from '../lib/types';
 
 function PlayEntries({ item }: { item: BaseItemDto }) {
@@ -179,14 +183,30 @@ export function ItemMenu({
   ...target
 }: MenuTarget & { children: React.ReactNode }) {
   const heroTarget = useHeroTarget(target.item);
+  const preview = useCardPreview(target.item);
   const open = React.useContext(OpenMenu);
-  if (!open) return <div {...heroTarget}>{children}</div>;
+  const watched = {
+    onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
+      heroTarget?.onPointerMove(e);
+      preview?.onPointerMove(e);
+    },
+    onPointerLeave: () => {
+      heroTarget?.onPointerLeave();
+      preview?.onPointerLeave();
+    },
+    onFocus: (e: React.FocusEvent<HTMLElement>) => {
+      heroTarget?.onFocus();
+      preview?.onFocus(e);
+    },
+    onBlur: () => preview?.onBlur(),
+  };
+  if (!open) return <div {...watched}>{children}</div>;
   const endPress = (e: React.PointerEvent) => {
     if (e.pointerType !== 'mouse') window.clearTimeout(pressTimer);
   };
   return (
     <div
-      {...heroTarget}
+      {...watched}
       style={{ WebkitTouchCallout: 'none' }}
       onContextMenu={(e) => {
         window.clearTimeout(pressTimer);
@@ -205,7 +225,7 @@ export function ItemMenu({
         );
       }}
       onPointerMove={(e) => {
-        heroTarget?.onPointerMove(e);
+        watched.onPointerMove(e);
         endPress(e);
       }}
       onPointerUp={endPress}
@@ -221,10 +241,7 @@ function ItemMenuContent({ item, onPage, onDetails }: MenuTarget) {
   const setPlayedUpTo = useSetPlayedUpTo();
   const clearResume = useClearResume();
   const setFavorite = useSetFavorite();
-  // Jellyfin cannot play a virtual item, such as an episode not yet aired.
-  const playable =
-    (item.Type === 'Movie' || item.Type === 'Episode') &&
-    item.LocationType !== 'Virtual';
+  const playable = canPlay(item);
   const played = !!item.UserData?.Played;
   const favorite = !!item.UserData?.IsFavorite;
   const resumeMs = ticksToMs(item.UserData?.PlaybackPositionTicks);
@@ -235,6 +252,14 @@ function ItemMenuContent({ item, onPage, onDetails }: MenuTarget) {
         {onPage ? item.Name : itemTitle(item)}
       </ContextMenuLabel>
       {playable && <PlayEntries item={item} />}
+      {playable && (
+        <ContextMenuItem
+          data-name="add-to-playlist"
+          onSelect={() => openAddToPlaylist([item])}
+        >
+          <BiListPlus /> <Trans>Add to playlist</Trans>
+        </ContextMenuItem>
+      )}
       {onDetails && (
         <ContextMenuItem data-name="details" onSelect={onDetails}>
           <BiInfoCircle /> <Trans>Details</Trans>

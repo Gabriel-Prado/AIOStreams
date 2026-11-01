@@ -2,21 +2,22 @@ import { t } from '@lingui/core/macro';
 import { Trans } from '@lingui/react/macro';
 import React from 'react';
 import { flushSync } from 'react-dom';
-import { BiInfoCircle, BiPlay, BiSolidStar } from 'react-icons/bi';
+import { BiInfoCircle, BiPlay } from 'react-icons/bi';
 import { Button } from '@aiostreams/ui/button';
 import { Skeleton } from '@aiostreams/ui/skeleton';
 import { cn } from '@aiostreams/ui/core/styling';
-import { useMediaQuery } from '@aiostreams/ui/hooks/media-query';
 import { useSession } from '../lib/session';
+import { settings, useSetting } from '../lib/settings';
 import { currentHost } from '../lib/hosts';
 import { usePageShown } from '../lib/page-shown';
-import { useItem } from '../lib/queries';
+import { useFetchNextUp, useItem } from '../lib/queries';
 import { focusOn, keyboardFocus, useAction } from '../lib/input';
 import { ScrollRoot, watch } from '../lib/use-in-view';
 import { backdropUrl, landscapeUrl, logoUrl } from '../lib/images';
 import { itemSubtitle, itemTitle, ticksToMs } from '../lib/format';
 import { itemPath, navigate } from '../lib/paths';
 import { useVersionPicker } from './version-picker';
+import { Scores, scoresOf } from './scores';
 import type { JellyfinClient } from '../lib/client';
 import type { BaseItemDto } from '../lib/types';
 import { pageRtl } from '../lib/direction';
@@ -25,7 +26,6 @@ import { useLatest } from '../lib/use-latest';
 import { CachedImage } from './cached-image';
 import { GlideLayers } from './glide-layers';
 
-const ROTATE_MS = 9000;
 const DRAG_SLOP_PX = 8;
 const LAND_SHARE = 0.35;
 const FLICK_PX_MS = 0.4;
@@ -233,32 +233,35 @@ function HeroDetails({
 }) {
   const { client } = useSession();
   const picker = useVersionPicker();
+  const fetchNextUp = useFetchNextUp();
   const logo = logoUrl(client, item, { maxWidth: 384 });
   // By address, since the hero swaps items under the same details.
   const [failedLogo, setFailedLogo] = React.useState<string>();
   // Jellyfin cannot play a virtual item, such as an episode not yet aired.
   const playable =
-    (item.Type === 'Movie' || item.Type === 'Episode') &&
-    item.LocationType !== 'Virtual';
-  const holdPlay = useHold(() =>
-    picker.play(item, {
-      startMs: ticksToMs(item.UserData?.PlaybackPositionTicks),
-      held: true,
-    })
-  );
+    item.Type === 'Series' ||
+    ((item.Type === 'Movie' || item.Type === 'Episode') &&
+      item.LocationType !== 'Virtual');
+  const play = (held?: boolean) =>
+    item.Type === 'Series'
+      ? void fetchNextUp(item.Id!).then((episode) =>
+          episode
+            ? picker.play(episode, {
+                startMs: ticksToMs(episode.UserData?.PlaybackPositionTicks),
+                held,
+              })
+            : navigate(itemPath(item))
+        )
+      : picker.play(item, {
+          startMs: ticksToMs(item.UserData?.PlaybackPositionTicks),
+          held,
+        });
+  const holdPlay = useHold(() => play(true));
   const parts: [string, React.ReactNode][] = [
     item.Type === 'Episode'
       ? ['episode', itemSubtitle(item)]
       : ['year', item.ProductionYear],
-    [
-      'score',
-      item.CommunityRating ? (
-        <span className="inline-flex items-center gap-1">
-          <BiSolidStar className="text-yellow-400" />
-          {item.CommunityRating.toFixed(1)}
-        </span>
-      ) : null,
-    ],
+    ['score', scoresOf(item).length ? <Scores item={item} max={3} /> : null],
     ['genres', item.Genres?.slice(0, 3).join(', ')],
   ];
   const meta = parts.filter(([, part]) => part);
@@ -315,11 +318,7 @@ function HeroDetails({
               intent="white"
               className="rounded-full"
               leftIcon={<BiPlay className="text-xl" />}
-              onClick={() =>
-                picker.play(item, {
-                  startMs: ticksToMs(item.UserData?.PlaybackPositionTicks),
-                })
-              }
+              onClick={() => play()}
               {...holdPlay}
             >
               <Trans>Play</Trans>
@@ -333,7 +332,7 @@ function HeroDetails({
             leftIcon={<BiInfoCircle className="text-xl" />}
             onClick={() => navigate(itemPath(item))}
           >
-            {playable ? t`More info` : t`Open`}
+            <Trans>More info</Trans>
           </Button>
         </div>
       )}
@@ -341,7 +340,7 @@ function HeroDetails({
   );
 }
 
-/** Fades the next or previous title in as far as a finger drags sideways over the hero. */
+/** Fades the next or previous title in as far as a finger or the mouse drags sideways over the hero. */
 function useSwipeFade(
   onLand: (step: 1 | -1) => void,
   onDragging: (dragging: boolean) => void
@@ -421,6 +420,18 @@ function useSwipeFade(
     if (d?.id !== e.pointerId) return;
     drag.current = null;
     if (!d.side) return;
+    if (e.pointerType === 'mouse') {
+      d.hero.style.userSelect = '';
+      // The click that ends a drag mustn't press what it ends over.
+      const swallow = (click: Event) => {
+        click.preventDefault();
+        click.stopPropagation();
+      };
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() =>
+        window.removeEventListener('click', swallow, { capture: true })
+      );
+    }
     const width = d.hero.clientWidth;
     const velocity = e.timeStamp - d.at > 100 ? 0 : d.velocity;
     const heading =
@@ -445,7 +456,9 @@ function useSwipeFade(
 
   return {
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
-      if (e.pointerType !== 'touch' || !e.isPrimary) return;
+      const mouse = e.pointerType === 'mouse';
+      if (!e.isPrimary || (mouse ? e.button !== 0 : e.pointerType !== 'touch'))
+        return;
       settle();
       drag.current = {
         id: e.pointerId,
@@ -471,6 +484,12 @@ function useSwipeFade(
           return;
         d.side = Math.sign(moved);
         latest.current.onDragging(true);
+        // A finger's pointer is held by the hero already; a mouse's leaves it.
+        if (e.pointerType === 'mouse') {
+          d.hero.setPointerCapture(e.pointerId);
+          d.hero.style.userSelect = 'none';
+          getSelection()?.removeAllRanges();
+        }
       }
       // Back past the start only undoes the fade.
       const dx = d.side < 0 ? Math.min(0, moved) : Math.max(0, moved);
@@ -482,6 +501,8 @@ function useSwipeFade(
     onPointerUp: (e: React.PointerEvent) => release(e, false),
     // A system gesture takes the pointer, so the fade is undone.
     onPointerCancel: (e: React.PointerEvent) => release(e, true),
+    // The mouse would carry off the artwork or a link instead.
+    onDragStart: (e: React.DragEvent) => e.preventDefault(),
   };
 }
 
@@ -504,6 +525,7 @@ export function Hero({
   const { client } = useSession();
   const featured = items.filter((i) => backdropSrc(client, i));
   const [index, setIndex] = React.useState(0);
+  const [seconds] = useSetting(settings.interface.heroSeconds);
   const [paused, setPaused] = React.useState(false);
   const [dragging, setDragging] = React.useState(false);
   // Keys of the previous, current and next slides, passed round as a swipe
@@ -515,10 +537,7 @@ export function Hero({
       step > 0 ? [main, next, prev] : [next, prev, main]
     );
   }, setDragging);
-  const swipeable =
-    useMediaQuery('(pointer: coarse)') &&
-    !currentHost().tv &&
-    featured.length > 1;
+  const swipeable = !currentHost().tv && featured.length > 1;
   const shown = usePageShown();
   const section = React.useRef<HTMLElement>(null);
   const [focused, setFocused] = React.useState(false);
@@ -542,10 +561,19 @@ export function Hero({
       return;
     const timer = setTimeout(
       () => setIndex((i) => (i + 1) % featured.length),
-      ROTATE_MS
+      seconds * 1000
     );
     return () => clearTimeout(timer);
-  }, [index, paused, focused, dragging, shown, inSight, featured.length]);
+  }, [
+    index,
+    paused,
+    focused,
+    dragging,
+    shown,
+    inSight,
+    featured.length,
+    seconds,
+  ]);
 
   const landing = React.useRef<'first' | 'last' | null>(null);
   const turn = (step: 1 | -1) => {
@@ -605,7 +633,7 @@ export function Hero({
       }
       {...(swipeable ? swipe : {})}
     >
-      <div className="absolute inset-0 isolate">
+      <div data-ui="hero-backdrops" className="absolute inset-0 isolate">
         {slides.map(({ key, role, item }) => (
           <div
             key={key}

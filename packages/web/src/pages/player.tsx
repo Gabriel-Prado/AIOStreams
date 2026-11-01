@@ -43,7 +43,10 @@ import {
   type VideoFit,
 } from '../lib/settings';
 import {
+  SUBTITLE_LIFT_EASE,
+  SUBTITLE_LIFT_MS,
   subtitleCss,
+  subtitleHeight,
   subtitleLine,
   subtitleScale,
 } from '../lib/subtitles/style';
@@ -54,7 +57,7 @@ import { noteLastPlayed } from '../lib/last-played';
 import { PlayerControls } from '../components/player/controls';
 import {
   countPlayedOn,
-  useNextEpisodePrompt,
+  useUpNextPrompt,
 } from '../components/player/next-episode';
 import {
   useVersionPicker,
@@ -70,7 +73,11 @@ import type {
 import { useDownloadOf, type Download } from '../lib/downloads';
 import { Cover } from '../components/player/cover';
 import { party, useParty } from '../lib/party/party';
-import { leavePartyPlayback, usePartyBinding } from '../lib/party/follow';
+import {
+  leavePartyPlayback,
+  usePartyBinding,
+  usePartyNeighbours,
+} from '../lib/party/follow';
 import { usePlayForParty } from '../lib/party/actions';
 import { usePartyPlayer } from '../lib/party/playback';
 import { PartyLayer } from '../components/party/party-layer';
@@ -78,6 +85,7 @@ import { useRemotePlayer } from '../components/remote-target';
 import { indexForTrack } from '../lib/remote/tracks';
 import { useLatest } from '../lib/use-latest';
 import { openPartySheet } from '../components/party/party-sheet';
+import { usePlaylistEdits, usePlaylistName } from '../lib/playlists';
 
 interface PlayerProps {
   item: BaseItemDto;
@@ -91,6 +99,8 @@ interface PlayerProps {
   youTube?: string;
   /** Whether the cover still hides the player, until its first frame. */
   onCovered(covered: boolean): void;
+  /** The playlist it was started from. */
+  playlist?: string;
 }
 
 /**
@@ -121,10 +131,12 @@ export function PlayerPage({
   itemId,
   sourceId,
   startMs,
+  playlist,
 }: {
   itemId: string;
   sourceId: string;
   startMs: number;
+  playlist?: string;
 }) {
   const download = useDownloadOf(itemId);
   // A finished download plays its own file, with or without the server.
@@ -152,7 +164,7 @@ export function PlayerPage({
   // Pinned once found: a refreshed version list must not restart playback.
   const [playing, setPlaying] = React.useState<Omit<
     PlayerProps,
-    'startMs' | 'onCovered'
+    'startMs' | 'onCovered' | 'playlist'
   > | null>(null);
   const [covered, setCovered] = React.useState(true);
   const sources = local ? [local.source!] : playableSources(info.data);
@@ -166,8 +178,8 @@ export function PlayerPage({
   React.useEffect(() => {
     if (!missing || !item.data) return;
     lastVersions.set(itemId, undefined);
-    navigate(versionsPath(item.data), { replace: true });
-  }, [missing, item.data, itemId]);
+    navigate(versionsPath(item.data, playlist), { replace: true });
+  }, [missing, item.data, itemId, playlist]);
   React.useEffect(() => {
     if (playing) noteLastPlayed(playing.item, playing.source);
   }, [playing]);
@@ -210,7 +222,12 @@ export function PlayerPage({
       />
       {playing ? (
         <VersionPickerProvider>
-          <Player {...playing} startMs={startMs} onCovered={setCovered} />
+          <Player
+            {...playing}
+            startMs={startMs}
+            playlist={playlist}
+            onCovered={setCovered}
+          />
         </VersionPickerProvider>
       ) : loading ? null : (
         <Failure
@@ -240,7 +257,7 @@ function useEnded(item: BaseItemDto, close?: () => void) {
   }, [item.Id]);
   const ended = React.useRef(back);
   const onEnded = React.useCallback(() => ended.current(), []);
-  const connect = (next: ReturnType<typeof useNextEpisodePrompt>) => {
+  const connect = (next: ReturnType<typeof useUpNextPrompt>) => {
     ended.current = () => {
       if (!next.autoplay || !next.next) return back();
       void next.playOn().then((ok) => {
@@ -254,13 +271,15 @@ function useEnded(item: BaseItemDto, close?: () => void) {
 function useSwitchVersion(
   item: BaseItemDto,
   source: SourceInfo,
-  player: PlayerController
+  player: PlayerController,
+  playlist?: string
 ) {
   const picker = useVersionPicker();
   return () =>
     picker.open(item, {
       startMs: player.playhead.positionMs,
       playing: source.Id ?? undefined,
+      playlist,
     });
 }
 
@@ -442,14 +461,28 @@ function cueCss(style: SubtitleStyle): string {
 }
 
 /** For a player that draws no subtitles, placed and sized as the page's own video draws cues. */
-function SubtitleText({ text, style }: { text: string; style: SubtitleStyle }) {
+function SubtitleText({
+  text,
+  style,
+  lift,
+}: {
+  text: string;
+  style: SubtitleStyle;
+  lift: number;
+}) {
   const { fontWeight, fontFamily, color, backgroundColor, textShadow } =
     subtitleCss(style);
+  const raise = subtitleHeight(style, lift) - subtitleHeight(style);
   return (
     <div
       data-ui="player-subtitle"
-      className="pointer-events-none fixed inset-x-0 flex justify-center px-[5%] text-center"
-      style={{ bottom: `${100 - subtitleLine(style)}%` }}
+      className="pointer-events-none fixed inset-x-0 flex justify-center px-[5%] text-center transition-transform motion-reduce:transition-none"
+      style={{
+        bottom: `${100 - subtitleLine(style)}%`,
+        transform: `translateY(${-raise}vh)`,
+        transitionDuration: `${SUBTITLE_LIFT_MS}ms`,
+        transitionTimingFunction: SUBTITLE_LIFT_EASE,
+      }}
     >
       <span
         className="whitespace-pre-line px-2"
@@ -466,6 +499,18 @@ function SubtitleText({ text, style }: { text: string; style: SubtitleStyle }) {
       </span>
     </div>
   );
+}
+
+/** What another device queues goes into the playlist this plays from: after this title, or at the end. */
+function useQueue(item: BaseItemDto, playlist?: string) {
+  const edits = usePlaylistEdits();
+  const name = usePlaylistName(playlist) ?? '';
+  if (!playlist) return undefined;
+  return (itemIds: string[], soon: boolean) =>
+    void edits.add(playlist, itemIds, soon ? item.Id! : undefined).then(
+      (added) => added && toast.success(t`Added to ${name}`),
+      () => toast.error(t`Could not add to ${name}`)
+    );
 }
 
 function useKeepAwake(player: PlayerController, own: boolean) {
@@ -523,6 +568,7 @@ function Player({
   local,
   youTube,
   onCovered,
+  playlist,
 }: PlayerProps) {
   const { client } = useSession();
   const video = React.useRef<HTMLVideoElement>(null);
@@ -535,6 +581,7 @@ function Player({
   const [startPaused] = React.useState(() => !!playlistItemId);
   const inParty = !!useParty();
   const playForParty = usePlayForParty();
+  const queued = usePartyNeighbours(playlistItemId);
   const back = React.useCallback(() => {
     if (playlistItemId) leavePartyPlayback();
     ended.back();
@@ -568,11 +615,12 @@ function Player({
     startMs,
     onEnded,
     onClosed: back,
-    onAdvance: (episode) => {
+    onAdvance: (next) => {
       countPlayedOn();
-      navigate(to.play(episode.itemId, episode.source.Id!, episode.startMs), {
-        replace: true,
-      });
+      navigate(
+        to.play(next.itemId, next.source.Id!, next.startMs, next.playlist),
+        { replace: true }
+      );
     },
     prefs,
     subtitleStyle,
@@ -590,32 +638,29 @@ function Player({
     () =>
       playlistItemId
         ? {
-            step: (direction: 'next' | 'previous', episode: BaseItemDto) => {
-              const state = party.state();
-              const at =
-                (state?.playingIndex ?? 0) + (direction === 'next' ? 1 : -1);
-              if (state?.queue[at])
-                party.request({
-                  type: direction === 'next' ? 'NextItem' : 'PreviousItem',
-                  playlistItemId,
-                });
-              else void playForParty(episode, null);
-            },
-            play: (episode: BaseItemDto) => void playForParty(episode, null),
+            queued,
+            step: (direction: 'next' | 'previous') =>
+              party.request({
+                type: direction === 'next' ? 'NextItem' : 'PreviousItem',
+                playlistItemId,
+              }),
+            play: (target: BaseItemDto, playlist?: string) =>
+              void playForParty(target, null, 0, playlist),
           }
         : undefined,
-    [playlistItemId, playForParty]
+    [playlistItemId, playForParty, queued]
   );
-  const next = useNextEpisodePrompt({
+  const next = useUpNextPrompt({
     item,
     source,
     player,
     segments,
     onBack: back,
     group,
+    playlist,
   });
   connect(next);
-  const switchVersion = useSwitchVersion(item, source, player);
+  const switchVersion = useSwitchVersion(item, source, player, next.playlist);
   const together = () =>
     openPartySheet(
       inParty
@@ -625,11 +670,17 @@ function Player({
               title: fullTitle(item),
               run: () => {
                 own.setPaused(true);
-                return playForParty(item, source, own.playhead.positionMs);
+                return playForParty(
+                  item,
+                  source,
+                  own.playhead.positionMs,
+                  next.playlist
+                );
               },
             },
           }
     );
+  const queue = useQueue(item, next.playlist);
   const controls = useShowTrackPicks(player, item, source);
   useReporting(player, { item, source, playSessionId });
   const act = useNowPlaying(item, player, {
@@ -637,7 +688,7 @@ function Player({
     onNext: next.next ? next.playNext : undefined,
     onPrevious: next.previous ? next.playPrevious : undefined,
   });
-  useRemotePlayer(controls, item, source, act);
+  useRemotePlayer(controls, item, source, act, queue);
   useKeepAwake(player, !hostPlayer);
   const launchedName = launched?.name ?? '';
   const failure = player.state.error ?? '';
@@ -666,7 +717,11 @@ function Player({
         </>
       )}
       {player.subtitleText && (
-        <SubtitleText text={player.subtitleText} style={subtitleStyle} />
+        <SubtitleText
+          text={player.subtitleText}
+          style={subtitleStyle}
+          lift={player.subtitleLift}
+        />
       )}
       {player.stats?.text && (
         <pre
@@ -707,6 +762,12 @@ function Player({
               onNext={next.next ? next.playNext : undefined}
               onEpisode={next.playEpisode}
               loadingEpisode={next.loading}
+              steps={next.listed ? 'playlist' : undefined}
+              playlist={
+                next.playlist
+                  ? { id: next.playlist, onPlay: next.playEntry }
+                  : undefined
+              }
               onParty={together}
             />
           )}

@@ -3,7 +3,7 @@ import type { Span } from '../subtitles/align';
 import type { BaseItemDto, MediaStream, SourceInfo } from '../types';
 import type { PlaybackPrefs } from '../user-config';
 import type { Chapter } from './chapters';
-import type { PlayerState, QueuedEpisode, Track } from './controller';
+import type { PlayerState, QueuedItem, Track } from './controller';
 import type { TimeRange } from './playhead';
 
 /** One of the server's external subtitles, which an engine loads once picked. */
@@ -45,8 +45,8 @@ export interface EngineFile {
 export interface EngineStyle {
   subtitleStyle?: SubtitleStyle;
   fit: VideoFit;
-  /** The share of the height the controls cover. */
-  lift: number;
+  /** Percent of the height subtitles sit at: the chosen one or above the controls, or on the way between. */
+  height: number;
 }
 
 export type EngineState = Partial<
@@ -78,7 +78,7 @@ export type EngineEvent =
   | { type: 'loaded' }
   | { type: 'ended' }
   | { type: 'failed'; error: string; retry?: { label: string; run(): void } }
-  | { type: 'advanced'; episode: QueuedEpisode }
+  | { type: 'advanced'; next: QueuedItem }
   /** The user closed the player's own window. */
   | { type: 'closed' }
   | { type: 'subtitle-text'; text: string }
@@ -113,6 +113,8 @@ export interface PlayerEngine {
   /** Stretches the page skips, which a player fetching ahead can leave out, or offers to, which it can fetch past early. */
   skipAhead?(skips: PlannedSkip[]): void;
   setStyle?(style: EngineStyle): void;
+  /** The page's controls showing over the video, or hidden again. */
+  showControls?(shown: boolean): void;
   toggleFullscreen?(): void;
   /** The text of a subtitle file it was given, null for one it can't read; server ones are read from their address. */
   ownText?(id: string): string | null;
@@ -145,7 +147,7 @@ export interface PlayerEngine {
   /** The player in its own window it drives. */
   external?: string;
   closeWindow?(): void;
-  queueNext?(episode: QueuedEpisode): void;
+  queueNext?(next: QueuedItem | null): void;
 }
 
 export type EngineFactory = (

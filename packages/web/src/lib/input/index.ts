@@ -14,6 +14,7 @@ export {
 } from './actions';
 export {
   inputCount,
+  isRepeat,
   mediaKeyJustTaken,
   movesFocus,
   noteInput,
@@ -40,6 +41,7 @@ export {
 export { startGamepads } from './gamepad';
 export { returnFocus } from './return';
 export { useRestoreFocus } from './restore-focus';
+export { focusDialog, useDialogStart } from './dialog-start';
 export { startSubmitButtons } from './submit-buttons';
 export { tab, tabList } from './tabs';
 export { inputLabels } from './keys';

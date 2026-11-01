@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::discord::Presence;
+use crate::licenses::LicenseList;
 use crate::now_playing::{self, MediaKey};
 use crate::playback::{Change, Chapter, Load, PlayerState, Settings, Style, SubtitleLine, Track};
 
@@ -37,6 +38,11 @@ pub enum Inbound {
         #[serde(default)]
         external: bool,
     },
+    /// Drops the files queued after the playing one.
+    PlayerUnqueue {
+        #[serde(default)]
+        external: bool,
+    },
     PlayerSet {
         #[serde(flatten)]
         change: Change,
@@ -48,11 +54,12 @@ pub enum Inbound {
         #[serde(default)]
         external: bool,
     },
-    /// Adds a subtitle from the server and shows it.
+    /// Adds a subtitle from the server and shows it, in place of track `replace`.
     PlayerSubtitleAdd {
         url: String,
         title: String,
         language: String,
+        replace: Option<u64>,
         #[serde(default)]
         external: bool,
     },
@@ -149,6 +156,8 @@ pub enum Inbound {
         web: Option<String>,
         server: Option<String>,
     },
+    /// The licences of what the app ships besides the page.
+    Licenses,
     /// Checks for an update and downloads it; `None` keeps the installed channel.
     UpdateCheck {
         channel: Option<UpdateChannel>,
@@ -341,6 +350,7 @@ pub enum Outbound {
     Diagnostics {
         text: String,
     },
+    Licenses(LicenseList),
     /// `checking`, `downloading`, `ready`, `current`, `error`, or `off` for a
     /// copy Velopack did not install.
     UpdateState {

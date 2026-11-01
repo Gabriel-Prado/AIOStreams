@@ -37,9 +37,7 @@ import {
   DropdownMenuLabel,
 } from '@aiostreams/ui/dropdown-menu';
 import { cn } from '@aiostreams/ui/core/styling';
-import { clock } from '../../lib/format';
 import { currentHost } from '../../lib/hosts';
-import { chapterAt } from '../../lib/playback/chapters';
 import type { PlayerController, Track } from '../../lib/playback/controller';
 import {
   settings,
@@ -68,7 +66,7 @@ import { subtitleLanguages, usePlaybackPrefs } from '../../lib/user-config';
 import { ControlButton } from './buttons';
 import { useParty } from '../../lib/party/party';
 import { RATES, rateLabel } from './keys';
-import { usePlayhead } from '../../lib/playback/playhead';
+import { useLatest } from '../../lib/use-latest';
 
 /** Opens in the menu's place from a row under its list. */
 interface MenuPage {
@@ -86,6 +84,7 @@ function Menu({
   options,
   value,
   onSelect,
+  open,
   onOpenChange,
   action,
   pages = [],
@@ -97,6 +96,7 @@ function Menu({
   options: Track[];
   value: string | null;
   onSelect(id: string | null): void;
+  open: boolean;
   onOpenChange(open: boolean): void;
   action?: { name: string; label: string; icon: React.ReactNode; run(): void };
   pages?: MenuPage[];
@@ -109,6 +109,12 @@ function Menu({
   const back = React.useRef<HTMLDivElement>(null);
   const rows = React.useRef(new Map<string, HTMLDivElement>());
   const left = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (open) return;
+    setExpanded(false);
+    setPageName(null);
+    left.current = null;
+  }, [open]);
   React.useEffect(() => {
     if (expanded) firstMore.current?.focus();
   }, [expanded]);
@@ -131,7 +137,17 @@ function Menu({
           (value ?? '') === option.id ? 'opacity-100' : 'opacity-0'
         )}
       />
-      <span className="[overflow-wrap:anywhere]">{option.label}</span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        {option.label}
+        {option.detail && (
+          <span
+            data-name="detail"
+            className="block truncate text-[0.8em] text-gray-400"
+          >
+            {option.detail}
+          </span>
+        )}
+      </span>
     </DropdownMenuItem>
   );
   return (
@@ -141,18 +157,17 @@ function Menu({
       side="top"
       align="end"
       sideOffset={8}
-      onOpenChange={(open) => {
-        if (!open) {
-          setExpanded(false);
-          setPageName(null);
-          left.current = null;
-        }
-        onOpenChange(open);
-      }}
+      open={open}
+      onOpenChange={onOpenChange}
       onEscapeKeyDown={(e) => {
         if (!page) return;
         e.preventDefault();
         setPageName(null);
+      }}
+      // Focus stays on what an item opened, rather than going back to the button.
+      onCloseAutoFocus={(e) => {
+        const at = document.activeElement;
+        if (at && at !== document.body) e.preventDefault();
       }}
       className="flex max-h-[60vh] min-w-[12rem] max-w-[min(22rem,90vw)] flex-col bg-gray-950/95"
       trigger={
@@ -187,8 +202,40 @@ function Menu({
       ) : (
         <>
           <DropdownMenuLabel>{label}</DropdownMenuLabel>
-          {/* The list scrolls above the pinned page rows; a short screen scrolls both together. */}
+          {/* The list scrolls under the pinned page rows; a short screen scrolls both together. */}
           <div className="-mx-2 flex min-h-0 flex-col overflow-x-hidden px-2 [@media(max-height:640px)]:overflow-y-auto">
+            {pages.length > 0 && (
+              <div
+                data-ui="player-menu-pages"
+                className="-mx-2 mb-1 shrink-0 border-b px-2 pb-1"
+              >
+                {pages.map((p) => (
+                  <DropdownMenuItem
+                    key={p.name}
+                    ref={(el) => {
+                      if (el) rows.current.set(p.name, el);
+                      else rows.current.delete(p.name);
+                    }}
+                    data-ui="player-menu-action"
+                    data-name={p.name}
+                    onSelect={(e) => {
+                      e.preventDefault();
+                      left.current = p.name;
+                      setPageName(p.name);
+                    }}
+                  >
+                    {p.icon}
+                    <span className="flex-1">{p.label}</span>
+                    {p.value && (
+                      <span className="ms-3 tabular-nums text-[--muted]">
+                        {p.value}
+                      </span>
+                    )}
+                    <LuChevronRight className="!me-0 ms-1 flex-none rtl:-scale-x-100" />
+                  </DropdownMenuItem>
+                ))}
+              </div>
+            )}
             <div className="min-h-0 overflow-y-auto [@media(max-height:640px)]:shrink-0 [@media(max-height:640px)]:overflow-y-visible">
               {options.map((option) => item(option))}
               {more &&
@@ -221,38 +268,6 @@ function Menu({
                 </DropdownMenuItem>
               )}
             </div>
-            {pages.length > 0 && (
-              <div
-                data-ui="player-menu-footer"
-                className="-mx-2 mt-1 shrink-0 border-t px-2 pt-1"
-              >
-                {pages.map((p) => (
-                  <DropdownMenuItem
-                    key={p.name}
-                    ref={(el) => {
-                      if (el) rows.current.set(p.name, el);
-                      else rows.current.delete(p.name);
-                    }}
-                    data-ui="player-menu-action"
-                    data-name={p.name}
-                    onSelect={(e) => {
-                      e.preventDefault();
-                      left.current = p.name;
-                      setPageName(p.name);
-                    }}
-                  >
-                    {p.icon}
-                    <span className="flex-1">{p.label}</span>
-                    {p.value && (
-                      <span className="ms-3 tabular-nums text-[--muted]">
-                        {p.value}
-                      </span>
-                    )}
-                    <LuChevronRight className="!me-0 ms-1 flex-none rtl:-scale-x-100" />
-                  </DropdownMenuItem>
-                ))}
-              </div>
-            )}
           </div>
         </>
       )}
@@ -538,6 +553,8 @@ export function OptionButtons({
   onMenu,
   onVersions,
   onEpisodes,
+  onChapters,
+  onPlaylist,
   onAddFile,
   onSyncByEar,
   onSyncToLine,
@@ -549,6 +566,8 @@ export function OptionButtons({
   onParty?: () => void;
   onVersions?: () => void;
   onEpisodes?: () => void;
+  onChapters?: () => void;
+  onPlaylist?: () => void;
   onAddFile(): void;
   onSyncByEar(): void;
   onSyncToLine(): void;
@@ -565,34 +584,41 @@ export function OptionButtons({
           subtitleLanguages(prefs),
           state.subtitle
         );
-  const chapters = player.chapters ?? [];
-  const chapter = usePlayhead(player.playhead, (h) =>
-    chapterAt(chapters, h.positionMs)
-  );
   const tv = !!currentHost().tv;
   const unread = useParty()?.unread ?? 0;
   const hidden = subtitles.hidden.length;
+  // One at a time: a menu opened over another leaves the first open.
+  const [openMenu, setOpenMenu] = React.useState<string | null>(null);
+  const menuState = (name: string) => ({
+    open: openMenu === name,
+    onOpenChange: (open: boolean) =>
+      setOpenMenu((current) =>
+        open ? name : current === name ? null : current
+      ),
+  });
+  const reportMenu = useLatest(onMenu);
+  const anyOpen = openMenu !== null;
+  React.useEffect(() => {
+    if (!anyOpen) return;
+    reportMenu.current(true);
+    return () => reportMenu.current(false);
+  }, [anyOpen, reportMenu]);
   return (
     <div className="ms-auto flex items-center sm:gap-1">
+      {onPlaylist && (
+        <ControlButton name="playlist" label={t`Playlist`} onClick={onPlaylist}>
+          <LuListVideo />
+        </ControlButton>
+      )}
       {onEpisodes && (
         <ControlButton name="episodes" label={t`Episodes`} onClick={onEpisodes}>
           <LuGalleryVerticalEnd />
         </ControlButton>
       )}
-      {chapters.length > 1 && (
-        <Menu
-          name="chapters"
-          label={t`Chapters`}
-          icon={<LuListOrdered />}
-          options={chapters.map((c, i) => {
-            const number = i + 1;
-            const title = c.title || t`Chapter ${number}`;
-            return { id: String(i), label: `${title} · ${clock(c.startMs)}` };
-          })}
-          value={String(chapter)}
-          onSelect={(id) => id && player.seek(chapters[Number(id)].startMs)}
-          onOpenChange={onMenu}
-        />
+      {onChapters && (
+        <ControlButton name="chapters" label={t`Chapters`} onClick={onChapters}>
+          <LuListOrdered />
+        </ControlButton>
       )}
       {onVersions && (
         <ControlButton name="versions" label={t`Versions`} onClick={onVersions}>
@@ -607,7 +633,7 @@ export function OptionButtons({
           options={player.audioTracks}
           value={state.audio}
           onSelect={(id) => id && player.setAudio(id)}
-          onOpenChange={onMenu}
+          {...menuState('audio')}
           pages={
             player.sound
               ? [
@@ -634,7 +660,7 @@ export function OptionButtons({
           }}
           value={state.subtitle}
           onSelect={player.setSubtitle}
-          onOpenChange={onMenu}
+          {...menuState('subtitles')}
           action={
             player.subtitleFiles && {
               name: 'add-file',
@@ -698,7 +724,7 @@ export function OptionButtons({
           }))}
           value={String(state.rate)}
           onSelect={(id) => id && player.setRate?.(Number(id))}
-          onOpenChange={onMenu}
+          {...menuState('speed')}
         />
       )}
       {player.fit && <FitButton notice={notice} />}
@@ -737,7 +763,7 @@ export function OptionButtons({
           options={[{ id: '', label: t`Off` }, ...player.stats.pages]}
           value={player.stats.page}
           onSelect={player.stats.show}
-          onOpenChange={onMenu}
+          {...menuState('statistics')}
         />
       )}
       {player.toggleFullscreen && !tv && (

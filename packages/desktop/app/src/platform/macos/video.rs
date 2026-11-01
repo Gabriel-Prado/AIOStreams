@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use aiostreams_desktop_core::mpv::Mpv;
+use aiostreams_desktop_core::mpv::{Kind, Mpv};
 use aiostreams_desktop_core::playback::Fit;
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchTime};
@@ -70,7 +70,7 @@ pub fn running() -> Output {
     get(&RUNNING)
 }
 
-/// Below macOS 14, or without the MPVKit libmpv, only the render API.
+/// Below macOS 14, only the render API.
 fn choices() -> &'static [Output] {
     static CHOICES: OnceLock<&'static [Output]> = OnceLock::new();
     CHOICES.get_or_init(|| {
@@ -79,9 +79,7 @@ fn choices() -> &'static [Output] {
             minorVersion: 0,
             patchVersion: 0,
         };
-        if NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(version)
-            && mpvkit_library().is_some()
-        {
+        if NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(version) {
             &Output::ALL
         } else {
             &[Output::Compatibility]
@@ -131,28 +129,6 @@ pub fn choose(id: &str) {
     }
 }
 
-/// The libmpv the Metal and AVFoundation outputs draw with.
-pub fn mpvkit_library() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let mut candidates = vec![
-        dir.join("../Frameworks/libmpv-mpvkit.dylib"),
-        dir.join("libmpv-mpvkit.dylib"),
-    ];
-    if cfg!(debug_assertions) {
-        let arch = if cfg!(target_arch = "aarch64") {
-            "arm64"
-        } else {
-            "x86_64"
-        };
-        candidates.push(PathBuf::from(format!(
-            "{}/../vendor/macos-{arch}/libmpv-mpvkit.dylib",
-            env!("CARGO_MANIFEST_DIR")
-        )));
-    }
-    candidates.into_iter().find(|p| p.exists())
-}
-
 /// Opens the app again once this copy has quit, as one copy runs per data folder.
 pub fn relaunch() {
     let Ok(exe) = std::env::current_exe() else {
@@ -200,6 +176,8 @@ struct State {
     view: Option<Retained<NSView>>,
     video: Option<Video>,
     applied: Option<Applied>,
+    /// The user's mpv.conf sets target-peak, which the app then leaves alone.
+    own_peak: bool,
     off_pending: u32,
     refresh_pending: bool,
     observer: Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
@@ -220,10 +198,14 @@ pub fn attach(layer: Retained<CALayer>, view: Retained<NSView>, mpv: Arc<Mpv>) {
             &block,
         )
     };
+    let own_peak = mpv
+        .get_property("target-peak", Kind::String)
+        .is_some_and(|v| v.as_str() != Some("auto"));
     STATE.with_borrow_mut(|s| {
         s.layer = Some(layer);
         s.view = Some(view);
         s.mpv = Some(mpv);
+        s.own_peak = own_peak;
         s.observer = Some(observer);
     });
 }
@@ -300,7 +282,7 @@ fn apply() {
 impl State {
     fn switch_on(&mut self, video: Video, headroom: f64) {
         let output = running();
-        let target_peak = (output != Output::System).then(|| {
+        let target_peak = (output != Output::System && !self.own_peak).then(|| {
             let peak = (headroom * REFERENCE_WHITE).round() as u32;
             match self.applied.as_ref().and_then(|a| a.target_peak) {
                 // Each change rebuilds mpv's shaders, so small drifts are left alone.
@@ -344,7 +326,10 @@ impl State {
         log::info!(
             "hdr on primaries={} target-peak={} headroom={headroom:.2}",
             want.video.primaries,
-            target_peak.map_or("system".into(), |p| p.to_string()),
+            target_peak.map_or_else(
+                || if self.own_peak { "mpv.conf" } else { "system" }.into(),
+                |p| p.to_string()
+            ),
         );
         self.applied = Some(want);
     }
@@ -363,12 +348,16 @@ impl State {
                     layer.setColorspace(None);
                 }
                 for name in ["target-prim", "target-trc", "target-peak"] {
-                    set(mpv, name, "auto");
+                    if name != "target-peak" || !self.own_peak {
+                        set(mpv, name, "auto");
+                    }
                 }
             }
             Output::Mpv => {
                 layer.setWantsExtendedDynamicRangeContent(false);
-                set(mpv, "target-peak", "auto");
+                if !self.own_peak {
+                    set(mpv, "target-peak", "auto");
+                }
             }
             Output::System => set_dynamic_range(layer, false),
         }

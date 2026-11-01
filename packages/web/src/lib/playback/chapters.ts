@@ -1,4 +1,5 @@
 import type { MediaSegmentDto } from '../types';
+import type { ThumbnailFeed } from './thumbnails';
 
 type Kind = MediaSegmentDto['Type'];
 
@@ -27,6 +28,21 @@ export function chapterAt(chapters: Chapter[], ms: number): number {
     if (c.startMs <= ms) index = i;
   });
   return index;
+}
+
+/** How far before a chapter a seek to it may land. */
+export const CHAPTER_SNAP_MS = 1000;
+
+/** Its picture's keyframe when close, which the player shows without decoding up to it, else its start. */
+export function chapterSeekMs(
+  startMs: number,
+  thumbnails: ThumbnailFeed | undefined
+): number {
+  const keyframe = thumbnails?.kept()?.get(startMs)?.positionMs;
+  return keyframe !== undefined &&
+    Math.abs(startMs - keyframe) <= CHAPTER_SNAP_MS
+    ? keyframe
+    : startMs;
 }
 
 // A whole title, or the words before its first punctuation mark, once
@@ -58,6 +74,9 @@ const UNTITLED = /^(chapter)?$/;
 /** TV anime openings and endings run a minute and a half, some with a title card after. */
 const SONG_MIN_MS = 85_000;
 const SONG_MAX_MS = 110_000;
+
+/** Past this a named chapter also holds the programme, except credits, which run long on films. */
+const NAMED_MAX_MS = 180_000;
 
 function plainTitle(title: string): string {
   return title
@@ -102,6 +121,7 @@ export function chapterSegments(
         : undefined);
     const endMs = chapters[i + 1]?.startMs ?? durationMs;
     if (!type || !(endMs > chapter.startMs)) return [];
+    if (type !== 'Outro' && endMs - chapter.startMs > NAMED_MAX_MS) return [];
     return [segment(type, chapter.startMs, endMs)];
   });
 }

@@ -28,6 +28,8 @@ export interface ServerInfo extends Branding {
   personal: boolean;
   /** Each extension it implements, with its version. */
   features: Partial<Record<Feature, number>>;
+  /** Sends no extensions at all, as stock Jellyfin, which has its whole API. */
+  stock: boolean;
   /** The server's build, like `v2.35.0` or `nightly a1b2c3d4`. */
   version: string | null;
   /** CSS for everyone on the server, under each person's own. */
@@ -45,6 +47,7 @@ export const NO_SERVER_INFO: ServerInfo = {
   pinSignIn: false,
   personal: false,
   features: {},
+  stock: false,
   version: null,
   css: null,
   parties: null,
@@ -105,6 +108,7 @@ export function useServerInfoQuery(client: JellyfinClient) {
         pinSignIn: data.aiostreams?.pinSignIn ?? false,
         personal: data.aiostreams?.personal ?? false,
         features: data.aiostreams?.features ?? {},
+        stock: !data.aiostreams,
         version: buildVersion(data.aiostreams?.version),
         css: data.aiostreams?.css || null,
         parties: data.aiostreams?.parties ?? null,

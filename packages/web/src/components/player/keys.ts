@@ -1,13 +1,16 @@
 import { t } from '@lingui/core/macro';
 import React from 'react';
-import { chapterAt } from '../../lib/playback/chapters';
+import {
+  CHAPTER_SNAP_MS,
+  chapterAt,
+  chapterSeekMs,
+} from '../../lib/playback/chapters';
 import { currentHost } from '../../lib/hosts';
 import {
   focusOn,
   keyboardFocus,
   movesFocus,
   onAction,
-  type ActionHandler,
   type ActionId,
 } from '../../lib/input';
 import { useLatest } from '../../lib/use-latest';
@@ -32,6 +35,9 @@ export function rateLabel(rate: number): string {
 /** Back to a chapter's start, or the one before when it has only just begun. */
 const RESTART_CHAPTER_MS = 3000;
 
+/** `quiet` leaves the controls hidden, `brief` shows them for a moment. */
+type Outcome = boolean | void | 'quiet' | 'brief';
+
 interface PlayerKeys {
   player: PlayerController;
   /** The controls, which Back leaves before it leaves the player. */
@@ -41,10 +47,16 @@ interface PlayerKeys {
   /** Whether the controls show, which Back hides first on a TV. */
   visible: boolean;
   wake(): void;
+  /** Shows the controls for a moment. */
+  glance(): void;
+  glancing(): boolean;
   hide(): void;
   notice(text: string): void;
   togglePlay(): void;
-  seekBy(deltaMs: number): void;
+  /** True when it scrubs, which shows the controls whatever the setting. */
+  seekBy(deltaMs: number, held: boolean): boolean;
+  /** Plays from a remote's scrub, or drops it; false without one. */
+  endScrub(commit: boolean): boolean;
   onBack(): void;
   onPrevious?: () => void;
   onNext?: () => void;
@@ -118,9 +130,9 @@ export function usePlayerKeys(keys: PlayerKeys): void {
       k().notice(label ? t`Subtitles: ${label}` : t`Subtitles off`);
     };
     const chapterStep = (sign: number) => {
-      const { chapters, playhead, seek } = player();
+      const { chapters, playhead, seek, thumbnails } = player();
       if (!chapters?.length) return false;
-      const at = chapterAt(chapters, playhead.positionMs);
+      const at = chapterAt(chapters, playhead.positionMs + CHAPTER_SNAP_MS);
       const into = playhead.positionMs - (chapters[at]?.startMs ?? 0);
       const to =
         sign > 0
@@ -130,7 +142,7 @@ export function usePlayerKeys(keys: PlayerKeys): void {
             : Math.max(0, at - 1);
       const chapter = chapters[to];
       if (!chapter) return false;
-      seek(chapter.startMs);
+      seek(chapterSeekMs(chapter.startMs, thumbnails));
       const number = to + 1;
       k().notice(chapter.title || t`Chapter ${number}`);
     };
@@ -149,29 +161,54 @@ export function usePlayerKeys(keys: PlayerKeys): void {
       if (target) focusOn(target);
     };
 
-    const actions: Partial<Record<ActionId, ActionHandler>> = {
+    const quietly = () =>
+      !k().visible && !settings.controls.showOnPauseAndSkip.read();
+    const playKey = (toggle: () => void): Outcome => {
+      const quiet = quietly();
+      toggle();
+      if (quiet) return 'quiet';
+    };
+    const skip = (sign: number, repeat: boolean): Outcome => {
+      const hidden = !k().visible || k().glancing();
+      const quiet = quietly();
+      const ms = sign * settings.controls.seekStep.read() * 1000;
+      if (k().seekBy(ms, repeat) || !hidden) return;
+      return quiet ? 'quiet' : 'brief';
+    };
+
+    const actions: Partial<
+      Record<ActionId, (input: string, repeat: boolean) => Outcome>
+    > = {
       'player.controls': () => {
         if (keyboardFocus()) return false;
+        if (k().endScrub(true)) return;
         if (
           k().root.current?.querySelector(
             '[data-ui=skip-segment][data-visible]'
           )
         )
           return call(k().skipSegment);
-        focusControls();
+        if (k().visible) return focusControls();
+        return playKey(() => {
+          k().togglePlay();
+          if (settings.controls.showOnPauseAndSkip.read()) focusControls();
+        });
       },
-      'player.playPause': () => k().togglePlay(),
-      'player.play': () => {
-        if (player().state.paused) k().togglePlay();
-      },
-      'player.pause': () => {
-        if (!player().state.paused) k().togglePlay();
-      },
+      'player.playPause': () =>
+        playKey(() => {
+          if (!k().endScrub(true)) k().togglePlay();
+        }),
+      'player.play': () =>
+        playKey(() => {
+          if (!k().endScrub(true) && player().state.paused) k().togglePlay();
+        }),
+      'player.pause': () =>
+        playKey(() => {
+          if (!player().state.paused) k().togglePlay();
+        }),
       'player.stop': () => k().onBack(),
-      'player.skipBack': () =>
-        k().seekBy(-settings.controls.seekStep.read() * 1000),
-      'player.skipForward': () =>
-        k().seekBy(settings.controls.seekStep.read() * 1000),
+      'player.skipBack': (_, repeat) => skip(-1, repeat),
+      'player.skipForward': (_, repeat) => skip(1, repeat),
       'player.jump': (input) => {
         const { state, seek } = player();
         if (!state.durationMs) return false;
@@ -228,12 +265,14 @@ export function usePlayerKeys(keys: PlayerKeys): void {
     };
 
     const stops = Object.entries(actions).map(([id, run]) =>
-      onAction(id as ActionId, (input) => {
+      onAction(id as ActionId, (input, repeat) => {
         if (!k().ready) return id === 'player.stop' ? k().onBack() : undefined;
         // A control with keyboard focus moves on to the next with the arrows.
         if (keyboardFocus() && movesFocus(input)) return false;
-        if (run(input) === false) return false;
-        k().wake();
+        const outcome = run(input, repeat);
+        if (outcome === false) return false;
+        if (outcome === 'brief') k().glance();
+        else if (outcome !== 'quiet') k().wake();
       })
     );
     // A focused control keeps its key.
@@ -244,6 +283,7 @@ export function usePlayerKeys(keys: PlayerKeys): void {
     );
     stops.push(
       onAction('back', () => {
+        if (k().endScrub(false)) return;
         const el = keyboardFocus();
         if (el && k().root.current?.contains(el)) {
           el.blur();

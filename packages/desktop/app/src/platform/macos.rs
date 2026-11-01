@@ -505,15 +505,15 @@ impl VideoSurface {
 
     pub fn attach(&self, mpv: Arc<Mpv>) {
         let edr = match &self.drawn {
-            Drawn::OpenGl(layer) => {
-                *layer.ivars().mpv.borrow_mut() = Some(mpv.clone());
-                layer.start();
-                self.root.clone()
-            }
-            Drawn::Metal(_) => self.root.clone(),
+            Drawn::OpenGl(_) | Drawn::Metal(_) => self.root.clone(),
             Drawn::SampleBuffer(display) => display.clone(),
         };
-        video::attach(edr, self.view.clone(), mpv);
+        // Before rendering starts, as it reads mpv's options on this thread.
+        video::attach(edr, self.view.clone(), mpv.clone());
+        if let Drawn::OpenGl(layer) = &self.drawn {
+            *layer.ivars().mpv.borrow_mut() = Some(mpv);
+            layer.start();
+        }
     }
 
     /// The render context goes before mpv, with its OpenGL context current.
@@ -848,9 +848,6 @@ pub fn libmpv_candidates() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(p) = std::env::var("AIOSTREAMS_LIBMPV") {
         paths.push(PathBuf::from(p));
-    }
-    if video::running() != Output::Compatibility {
-        paths.extend(video::mpvkit_library());
     }
     if let Some(dir) = std::env::current_exe()
         .ok()
